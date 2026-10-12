@@ -2,8 +2,19 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
-http.createServer((req,res)=> res.end('SHADOW XMD V4 RUNNING - SCAN QR IN LOGS')).listen(process.env.PORT || 3000, ()=> console.log('PORT FIXED'));
-
+http.createServer((req,res)=>{
+  if(req.url === '/session'){
+    try{
+      const p = path.join(__dirname, 'sessions', 'session1', 'creds.json');
+      if(!fs.existsSync(p)) return res.end('Not connected yet - creds.json not found');
+      const data = fs.readFileSync(p,'utf-8');
+      const b64 = Buffer.from(data).toString('base64');
+      res.end(b64);
+    }catch(e){ res.end('Error: '+e.message); }
+  }else{
+    res.end('SHADOW XMD V4 RUNNING - Go to /session to get SESSION_ID');
+  }
+}).listen(process.env.PORT || 3000, ()=> console.log('PORT FIXED'));
 // FORCE FRESH QR - DELETE AFTER SCANNING ONCE
 try{ require('child_process').execSync('rm -rf sessions/session1'); console.log('DELETED OLD SESSION1 FOR FRESH QR'); }catch{}
 
