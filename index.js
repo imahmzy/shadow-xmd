@@ -88,7 +88,7 @@ async function startSession(sessionName, phoneNumberForPairing=null){
   let version; try{ version = (await fetchLatestBaileysVersion()).version; }catch{ version = [2,3000,1015901307]; }
   console.log(`[${sessionName}] REGISTERED: ${state.creds.registered} | pairing: ${phoneNumberForPairing||'none'} | fileExists: ${fs.existsSync(path.join(sessionDir,'creds.json'))}`);
 
-  const sock = makeWASocket({ auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) }, logger, version, markOnlineOnConnect: true, syncFullHistory: false, browser: ['Ubuntu','Chrome','20.0.04'] });
+  const sock = makeWASocket({ auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) }, logger, version, markOnlineOnConnect: true, syncFullHistory: false,browser: ['Chrome','Windows','10']
   runtimes[sessionName] = { sock, connected: false };
   sock.ev.on('creds.update', saveCreds);
 
