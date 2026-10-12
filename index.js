@@ -3,7 +3,9 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 http.createServer((req,res)=> res.end('SHADOW XMD V4 RUNNING - SCAN QR IN LOGS')).listen(process.env.PORT || 3000, ()=> console.log('PORT FIXED'));
-
+// FORCE FRESH QR - DELETE AFTER SCANNING ONCE
+const { execSync } = require('child_process');
+try{ execSync('rm -rf sessions/session1'); console.log('DELETED OLD SESSION1 FOR FRESH QR'); }catch{}
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
