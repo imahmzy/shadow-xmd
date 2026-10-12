@@ -1,8 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const pino = require('pino');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, downloadMediaMessage } = require('@whiskeysockets/baileys');
-const readline = require('readline');
+const http = require('http');
+http.createServer((req,res)=> res.end('SHADOW XMD V4 RUNNING')).listen(process.env.PORT || 3000, ()=> console.log('PORT FIXED'));
 
 const BOT_NAME = '𝙎𝙃𝘼𝘿𝙊𝙒ˣᵐᵈ ᐯ⁴';
 const MAX_SESSIONS = 10;
