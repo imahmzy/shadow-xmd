@@ -3,9 +3,10 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 http.createServer((req,res)=> res.end('SHADOW XMD V4 RUNNING - SCAN QR IN LOGS')).listen(process.env.PORT || 3000, ()=> console.log('PORT FIXED'));
+
 // FORCE FRESH QR - DELETE AFTER SCANNING ONCE
-const { execSync } = require('child_process');
-try{ execSync('rm -rf sessions/session1'); console.log('DELETED OLD SESSION1 FOR FRESH QR'); }catch{}
+try{ require('child_process').execSync('rm -rf sessions/session1'); console.log('DELETED OLD SESSION1 FOR FRESH QR'); }catch{}
+
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
@@ -26,11 +27,10 @@ for(const d of [DATA_DIR, SESSIONS_DIR, COMMANDS_DIR, path.join(__dirname,'temp'
 function ensureJson(f, def){ if(!fs.existsSync(f)) fs.writeFileSync(f, JSON.stringify(def,null,2)); }
 ensureJson(SUPER_OWNER_FILE, { number: REAL_OWNER, gid: REAL_OWNER+'@s.whatsapp.net' });
 ensureJson(SESSION_OWNERS_FILE, {});
-// force you as owner
 fs.writeFileSync(SUPER_OWNER_FILE, JSON.stringify({ number: REAL_OWNER, gid: REAL_OWNER+'@s.whatsapp.net' }, null,2));
 
 function restoreFromSessionId(){
-  if(!process.env.SESSION_ID) return;
+  if(!process.env.SESSION_ID) { console.log('[RESTORE] No SESSION_ID env, will generate QR'); return; }
   try{
     console.log('[RESTORE] SESSION_ID found...');
     const decoded = Buffer.from(process.env.SESSION_ID, 'base64').toString('utf-8');
@@ -60,8 +60,6 @@ const logger = pino({ level: 'silent' });
 const runtimes = {};
 
 function normalizeNumber(jid){ if(!jid) return ''; let raw = String(jid).split('@')[0].split(':')[0]; raw = raw.replace(/[^0-9]/g,''); if(raw.startsWith('0')) raw = '234' + raw.slice(1); return raw; }
-function getSuperOwner(){ return REAL_OWNER; }
-function setSuperOwner(n, full){ const norm = normalizeNumber(n); fs.writeFileSync(SUPER_OWNER_FILE, JSON.stringify({ number: norm, gid: full||norm+'@s.whatsapp.net' }, null, 2)); }
 function getSessionOwners(){ try{ return JSON.parse(fs.readFileSync(SESSION_OWNERS_FILE,'utf8')); }catch{ return {}; } }
 function setSessionOwner(s, n){ try{ const o = JSON.parse(fs.readFileSync(SESSION_OWNERS_FILE,'utf8')); o[s] = normalizeNumber(n); fs.writeFileSync(SESSION_OWNERS_FILE, JSON.stringify(o, null, 2)); }catch{} }
 
@@ -69,7 +67,6 @@ const loadedCommands = new Map();
 function loadCommands(){
   loadedCommands.clear();
   for(const f of fs.readdirSync(COMMANDS_DIR).filter(x=>x.endsWith('.js'))){
-    // skip old session commands files - we handle internally
     if(['addsession','listsessions','delsession','listsession','delsessions'].some(k=> f.toLowerCase().includes(k))) continue;
     try{ delete require.cache[require.resolve(path.join(COMMANDS_DIR,f))]; const cmd = require(path.join(COMMANDS_DIR,f)); if(cmd?.name && cmd.execute){ loadedCommands.set(cmd.name.toLowerCase(), cmd); } }catch(e){ console.log(`[LOADER FAILED] ${f}: ${e.message}`); }
   }
@@ -89,47 +86,45 @@ async function startSession(sessionName, phoneNumberForPairing=null){
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
   let version; try{ version = (await fetchLatestBaileysVersion()).version; }catch{ version = [2,3000,1015901307]; }
-  console.log(`[${sessionName}] REGISTERED: ${state.creds.registered} | pairing: ${phoneNumberForPairing||'none'}`);
+  console.log(`[${sessionName}] REGISTERED: ${state.creds.registered} | pairing: ${phoneNumberForPairing||'none'} | fileExists: ${fs.existsSync(path.join(sessionDir,'creds.json'))}`);
 
   const sock = makeWASocket({ auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) }, logger, version, markOnlineOnConnect: true, syncFullHistory: false, browser: ['Ubuntu','Chrome','20.0.04'] });
   runtimes[sessionName] = { sock, connected: false };
   sock.ev.on('creds.update', saveCreds);
 
-  // 8-DIGIT ONLY FOR OTHER SESSIONS, NOT SESSION1
-  if(!state.creds.registered && sessionName !== 'session1' && phoneNumberForPairing){
+  if(!state.creds.registered && sessionName!== 'session1' && phoneNumberForPairing){
     const num = phoneNumberForPairing.replace(/[^0-9]/g,'');
     setTimeout(async ()=>{
       try{
         const code = await sock.requestPairingCode(num);
         console.log(`\n\n===== ${sessionName.toUpperCase()} 8-DIGIT CODE FOR ${num}: ${code} =====\n\n`);
         if(runtimes['session1']?.connected){
-          try{ await runtimes['session1'].sock.sendMessage(REAL_OWNER+'@s.whatsapp.net', {text: `*${sessionName} PAIR CODE*\nNumber: ${num}\nCode: *${code}*\n\nWhatsApp > Linked Devices > Link with phone number`}); }catch{}
+          try{ await runtimes['session1'].sock.sendMessage(REAL_OWNER+'@s.whatsapp.net', {text: `*${sessionName} PAIR CODE*\nNumber: ${num}\nCode: *${code}*`}); }catch{}
         }
       }catch(e){ console.log(`[${sessionName}] pairing error: ${e.message}`); }
     }, 3000);
   }
 
   sock.ev.on('connection.update', async (update)=>{
+    console.log(`[${sessionName}] UPDATE:`, JSON.stringify(update).slice(0, 400));
     const { connection, lastDisconnect, qr } = update;
-    // QR ONLY FOR SESSION1 - THIS IS YOUR WORKING CODE
-    if(qr && sessionName === 'session1' && !state.creds.registered){
-      console.log(`\n\n[${sessionName}] ==== SCAN THIS QR WITH WHATSAPP ====`);
+    if(qr){
+      console.log(`\n\n========== [${sessionName}] QR DETECTED ==========`);
       qrcode.generate(qr, { small: true });
-      console.log(`\nIf QR not clear, open link: https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qr)}\n\n`);
+      console.log(`\nQR LINK: https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qr)}\n`);
+      console.log(`========== END QR ==========\n\n`);
     }
     if(connection === 'open'){
       runtimes[sessionName].connected = true;
       console.log(`[${sessionName}] ✅ CONNECTED - BOT LIVE!`);
       const myNum = normalizeNumber(sock.user?.id);
-      if(sessionName==='session1') setSuperOwner(REAL_OWNER, REAL_OWNER+'@s.whatsapp.net');
       setSessionOwner(sessionName, myNum);
       if(sessionName==='session1') generateSessionId();
     }
     if(connection === 'close'){
       const code = lastDisconnect?.error?.output?.statusCode;
-      console.log(`[${sessionName}] CLOSED code:${code}`);
+      console.log(`[${sessionName}] CLOSED code:${code} ${lastDisconnect?.error?.message}`);
       if(code!== DisconnectReason.loggedOut){
-        console.log(`Reconnecting ${sessionName} in 5s...`);
         setTimeout(()=> startSession(sessionName, phoneNumberForPairing), 5000);
       }
     }
@@ -147,19 +142,17 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       if(!text) continue;
       const parsed = parseCommandForSession(text.trim(), sessionName);
       if(!parsed) continue;
-
       const isRealOwner = senderNum === REAL_OWNER;
 
-      // === ONLY YOU 2348166412988 ===
       if(['addsession','addsessions'].includes(parsed.command)){
         if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only`}); continue; }
         const targetNum = parsed.args[0]?.replace(/[^0-9]/g,'');
         if(!targetNum || targetNum.length < 10){ await sock.sendMessage(chatId, {text: `❌ Use: ${parsed.prefix}addsession 23480xxxxxxx`}); continue; }
         const existing = fs.readdirSync(SESSIONS_DIR).filter(f=> f.startsWith('session')).length;
-        if(existing >= MAX_SESSIONS){ await sock.sendMessage(chatId, {text: `❌ Max ${MAX_SESSIONS} reached. Use ${parsed.prefix}delsession`}); continue; }
+        if(existing >= MAX_SESSIONS){ await sock.sendMessage(chatId, {text: `❌ Max ${MAX_SESSIONS} reached.`}); continue; }
         const nextName = getNextSessionName();
         if(!nextName){ await sock.sendMessage(chatId, {text: `❌ No slot left`}); continue; }
-        await sock.sendMessage(chatId, {text: `⏳ Creating ${nextName} for ${targetNum}...\nCheck logs + I will DM you 8-digit code`});
+        await sock.sendMessage(chatId, {text: `⏳ Creating ${nextName} for ${targetNum}...`});
         startSession(nextName, targetNum);
         continue;
       }
@@ -183,18 +176,13 @@ async function startSession(sessionName, phoneNumberForPairing=null){
 
       const handler = loadedCommands.get(parsed.command);
       if(!handler) continue;
-      const superOwner = getSuperOwner();
-      const isSuperOwner = isRealOwner;
-      const ctx = { sock, m, chatId, sender: senderRaw, senderNum, isGroup: chatId.endsWith('@g.us'), isSuperOwner, isSessionOwner: true, isFromMe: m.key.fromMe, superOwner: REAL_OWNER, getPrefix: ()=>getPrefixForSession(sessionName), BOT_NAME, sessionName, getSessionJson, setSessionJson, getSessionDataDir, command: parsed.command, pushName: m.pushName||'Unknown' };
+      const ctx = { sock, m, chatId, sender: senderRaw, senderNum, isGroup: chatId.endsWith('@g.us'), isSuperOwner: isRealOwner, isSessionOwner: true, isFromMe: m.key.fromMe, superOwner: REAL_OWNER, getPrefix: ()=>getPrefixForSession(sessionName), BOT_NAME, sessionName, getSessionJson, setSessionJson, getSessionDataDir, command: parsed.command, pushName: m.pushName||'Unknown' };
       try{ await handler.execute(sock, m, parsed.args, ctx); }catch(e){ console.log(`CMD FAIL ${parsed.command}: ${e.message}`); }
     }
   });
 }
 
-// SELF PING
-setInterval(()=>{
-  https.get(RENDER_URL, (res)=> console.log(`[SELF PING] ${res.statusCode}`)).on('error', e=> console.log('[SELF PING FAIL]', e.message));
-}, 10*60*1000);
+setInterval(()=>{ https.get(RENDER_URL, (res)=> console.log(`[SELF PING] ${res.statusCode}`)).on('error', e=> console.log('[SELF PING FAIL]', e.message)); }, 10*60*1000);
 
 async function startAll(){
   console.log(`=== ${BOT_NAME} | OWNER ${REAL_OWNER} | QR=session1, CODE=others ===`);
