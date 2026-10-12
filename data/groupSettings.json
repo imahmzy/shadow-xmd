@@ -1,0 +1,12 @@
+{
+  "120363409798199503@g.us": {
+    "antilink": "warn",
+    "antimention": "warn",
+    "warns": {
+      "174384966807605@lid": {
+        "link": 1,
+        "mention": 2
+      }
+    }
+  }
+}
