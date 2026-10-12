@@ -2,6 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 http.createServer((req,res)=> res.end('SHADOW XMD V4 RUNNING')).listen(process.env.PORT || 3000, ()=> console.log('PORT FIXED'));
+const pino = require('pino');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, downloadMediaMessage } = require('@whiskeysockets/baileys');
+const readline = require('readline');
 
 const BOT_NAME = '𝙎𝙃𝘼𝘿𝙊𝙒ˣᵐᵈ ᐯ⁴';
 const MAX_SESSIONS = 10;
@@ -114,7 +117,7 @@ async function startSession(sessionName, phoneNumberForPairing = null){
       if(!runtimes[sessionName]) runtimes[sessionName] = { sock, connected: true };
       runtimes[sessionName].connected = true;
       const myNum = normalizeNumber(sock.user?.id);
-      console.log(`\x1b[32m[${sessionName}] ✅ CONNECTED ${myNum} | NO VV | 234xxx DM | NO BACKLOG | 7MB\x1b[0m`);
+      console.log(`\x1b[32m[${sessionName}] ✅ CONNECTED ${myNum}\x1b[0m`);
       if(sessionName === 'session1' &&!getSuperOwner()){ setSuperOwner(myNum, sock.user?.id); setSessionOwner('session1', myNum); }
       if(!getSessionOwners()[sessionName]) setSessionOwner(sessionName, myNum);
     }
@@ -148,7 +151,7 @@ async function startSession(sessionName, phoneNumberForPairing = null){
   }
 }
 async function startAll(){
-  console.log(`\n\x1b[36m=== ${BOT_NAME} | CLEAN NO VV | 234xxx DM | NO BACKLOG ===\x1b[0m`);
+  console.log(`\n\x1b[36m=== ${BOT_NAME} | CLEAN NO VV ===\x1b[0m`);
   const existing = fs.existsSync(SESSIONS_DIR)? fs.readdirSync(SESSIONS_DIR).filter(f=> f.startsWith('session')) : [];
   if(existing.length === 0) startSession('session1');
   else for(const s of existing.sort()){ await startSession(s); await new Promise(r=> setTimeout(r, 1500)); }
