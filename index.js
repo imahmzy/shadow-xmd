@@ -1,285 +1,292 @@
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
-const https = require('https');
 const pino = require('pino');
-const qrcode = require('qrcode-terminal');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, downloadMediaMessage } = require('@whiskeysockets/baileys');
+const readline = require('readline');
 
-const BOT_NAME = 'SHADOW XMD V4';
-const REAL_OWNER = '2348166412988';
-const OWNER_LID = '220568498516184';
+const BOT_NAME = '𝙎𝙃𝘼𝘿𝙊𝙒ˣᵐᵈ ᐯ⁴';
 const MAX_SESSIONS = 10;
-const RENDER_URL = process.env.RENDER_EXTERNAL_URL || 'https://shadow-xmd-i4tf.onrender.com';
+const OWNER_JID = '2348166412988@s.whatsapp.net';
+const BOT_START_TIME = Math.floor(Date.now() / 1000);
 
-const DATA_DIR = path.join(__dirname, 'data');
-const SESSIONS_DIR = path.join(__dirname, 'sessions');
-const COMMANDS_DIR = path.join(__dirname, 'commands');
-const PER_SESSION_DATA_DIR = path.join(DATA_DIR, 'per_session');
-const SUPER_OWNER_FILE = path.join(DATA_DIR, 'super_owner.json');
-const SESSION_OWNERS_FILE = path.join(DATA_DIR, 'session_owners.json');
+// === VV SAVE CONFIG - PER SESSION ===
+const VV_TEMP_DIR = path.join(__dirname, 'temp', 'vv');
+const VV_STATE_FILE = path.join(__dirname, 'data', 'vvsave.json');
+const PER_SESSION_DATA_DIR = path.join(__dirname, 'data', 'per_session');
+if(!fs.existsSync(path.join(__dirname,'temp'))) fs.mkdirSync(path.join(__dirname,'temp'),{recursive:true});
+if(!fs.existsSync(VV_TEMP_DIR)) fs.mkdirSync(VV_TEMP_DIR,{recursive:true});
+if(!fs.existsSync(path.join(__dirname,'data'))) fs.mkdirSync(path.join(__dirname,'data'),{recursive:true});
+if(!fs.existsSync(PER_SESSION_DATA_DIR)) fs.mkdirSync(path.join(__dirname,'data','per_session'),{recursive:true});
+if(!fs.existsSync(VV_STATE_FILE)) fs.writeFileSync(VV_STATE_FILE, JSON.stringify({enabled:false}, null, 2));
+global.vvCache = global.vvCache || new Map();
+global.groupNameCache = global.groupNameCache || new Map();
 
-for(const d of [DATA_DIR, SESSIONS_DIR, COMMANDS_DIR, path.join(__dirname,'temp'), PER_SESSION_DATA_DIR]){
-  if(!fs.existsSync(d)) fs.mkdirSync(d,{recursive:true});
-}
-function ensureJson(f, def){ if(!fs.existsSync(f)) fs.writeFileSync(f, JSON.stringify(def,null,2)); }
-ensureJson(SUPER_OWNER_FILE, { number: REAL_OWNER });
-ensureJson(SESSION_OWNERS_FILE, {});
-
-const origError = console.error;
-console.error = (...args) => {
-  const str = args.join(' ');
-  if(str.includes('Bad MAC') || str.includes('Session error')) return;
-  origError(...args);
-};
-
-function restoreFromSessionId(){
-  const rawId = (process.env.SESSION_ID || '').trim();
-  if(!rawId) return console.log('[RESTORE] No SESSION_ID');
+function getSessionJson(sessionName, fileName, defaultData){
   try{
-    const decoded = Buffer.from(rawId, 'base64').toString('utf-8');
-    const sessionDir = path.join(SESSIONS_DIR, 'session1');
-    if(!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir,{recursive:true});
-    try{ for(const f of fs.readdirSync(sessionDir)){ fs.unlinkSync(path.join(sessionDir, f)); } }catch{}
-    try{
-      const parsed = JSON.parse(decoded);
-      if(parsed['creds.json']){
-        for(const [file, content] of Object.entries(parsed)){
-          fs.writeFileSync(path.join(sessionDir, file), content);
-        }
-        console.log('[RESTORE] FULL restored');
-        return;
-      }
-      fs.writeFileSync(path.join(sessionDir, 'creds.json'), JSON.stringify(parsed));
-      return;
-    }catch{
-      fs.writeFileSync(path.join(sessionDir, 'creds.json'), decoded);
-      console.log('[RESTORE] restored');
-    }
-  }catch(e){ console.log('[RESTORE FAILED]', e.message); }
+    const safeName = sessionName || 'session1';
+    const dir = path.join(PER_SESSION_DATA_DIR, safeName);
+    if(!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true});
+    const filePath = path.join(dir, fileName);
+    if(!fs.existsSync(filePath)) fs.writeFileSync(filePath, JSON.stringify(defaultData,null,2));
+    return JSON.parse(fs.readFileSync(filePath,'utf8'));
+  }catch{ return defaultData; }
 }
-restoreFromSessionId();
-
-function generateSessionId(){
+function setSessionJson(sessionName, fileName, data){
   try{
-    const credsPath = path.join(SESSIONS_DIR, 'session1', 'creds.json');
-    if(!fs.existsSync(credsPath)) return;
-    const data = fs.readFileSync(credsPath, 'utf-8');
-    const b64 = Buffer.from(data).toString('base64');
-    console.log(`\n\n========== SESSION_ID ==========\n${b64}\n========== END ==========\n\n`);
+    const safeName = sessionName || 'session1';
+    const dir = path.join(PER_SESSION_DATA_DIR, safeName);
+    if(!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true});
+    const filePath = path.join(dir, fileName);
+    fs.writeFileSync(filePath, JSON.stringify(data,null,2));
   }catch{}
 }
-
-http.createServer((req,res)=>{
-  if(req.url === '/session'){
-    try{
-      const credsPath = path.join(SESSIONS_DIR, 'session1', 'creds.json');
-      if(!fs.existsSync(credsPath)) return res.end('Not connected yet');
-      const data = fs.readFileSync(credsPath, 'utf-8');
-      const b64 = Buffer.from(data).toString('base64');
-      res.end(b64);
-    }catch(e){ res.end('Error: '+e.message); }
-  }else{
-    res.end('SHADOW XMD V4 RUNNING');
-  }
-}).listen(process.env.PORT || 3000);
-
-function getSessionDataDir(s){ const dir = path.join(PER_SESSION_DATA_DIR, s); if(!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true}); return dir; }
-function getSessionJson(s, file, def){ try{ const dir = path.join(PER_SESSION_DATA_DIR, s||'session1'); if(!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true}); const fp = path.join(dir, file); if(!fs.existsSync(fp)) fs.writeFileSync(fp, JSON.stringify(def,null,2)); return JSON.parse(fs.readFileSync(fp,'utf8')); }catch{ return def; } }
-function setSessionJson(s, file, data){ try{ const dir = path.join(PER_SESSION_DATA_DIR, s||'session1'); if(!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true}); fs.writeFileSync(path.join(dir, file), JSON.stringify(data,null,2)); }catch{} }
-function normalizeNumber(jid){ if(!jid) return ''; let raw = String(jid).split('@')[0].split(':')[0]; raw = raw.replace(/[^0-9]/g,''); if(raw.startsWith('0')) raw = '234' + raw.slice(1); return raw; }
-
-const logger = pino({ level: 'silent' });
-const runtimes = {};
-const loadedCommands = new Map();
-function loadCommands(){
-  loadedCommands.clear();
-  if(!fs.existsSync(COMMANDS_DIR)) return;
-  for(const f of fs.readdirSync(COMMANDS_DIR).filter(x=>x.endsWith('.js'))){
-    if(['listsessions'].some(k=> f.toLowerCase().includes(k))) continue;
-    try{ delete require.cache[require.resolve(path.join(COMMANDS_DIR,f))]; const cmd = require(path.join(COMMANDS_DIR,f)); if(cmd?.name && cmd.execute) loadedCommands.set(cmd.name.toLowerCase(), cmd); }catch(e){ console.log(`[LOADER] ${f}: ${e.message}`); }
-  }
-  console.log(`[${BOT_NAME}] Loaded ${loadedCommands.size} commands`);
+function isVVEnabled(sessionName){
+  try{
+    // Check per-session first (new 10 session method)
+    if(sessionName){
+      const per = getSessionJson(sessionName, 'vvsave.json', {enabled:false});
+      if(per.enabled) return true;
+    }
+    // Fallback global
+    return JSON.parse(fs.readFileSync(VV_STATE_FILE,'utf8')).enabled;
+  }catch{return false;}
 }
-loadCommands();
-function getPrefixForSession(s){ return (getSessionJson(s, 'prefix.json', { prefix: '.' }).prefix || '.'); }
-function parseCommandForSession(t,s){ const p = getPrefixForSession(s); if(!t.startsWith(p)) return null; const w = t.slice(p.length).trim().split(/\s+/); const cmd = w.shift()?.toLowerCase(); if(!cmd) return null; return { command: cmd, args: w, prefix: p }; }
-function getNextSessionName(){ for(let i=1;i<=MAX_SESSIONS;i++){ const name = `session${i}`; if(!fs.existsSync(path.join(SESSIONS_DIR, name))) return name; } return null; }
 
-async function startSession(sessionName){
-  const sessionDir = path.join(SESSIONS_DIR, sessionName);
-  if(!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir,{recursive:true});
-  getSessionJson(sessionName, 'mode.json', { mode: 'public' });
-  getSessionJson(sessionName, 'prefix.json', { prefix: '.' });
-  const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-  let version; try{ version = (await fetchLatestBaileysVersion()).version; }catch{ version = [2,3000,1015901307]; }
-  const sock = makeWASocket({
-    auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-    logger, version,
-    printQRInTerminal: false,
-    markOnlineOnConnect: true,
-    browser: ['Chrome','Windows','10']
-  });
-  runtimes[sessionName] = { sock, connected: false };
-  sock.ev.on('creds.update', saveCreds);
-  sock.ev.on('connection.update', async (update)=>{
-    const { connection, lastDisconnect, qr } = update;
-    if(qr){
-      console.log(`\n\n========== [${sessionName}] QR ==========`);
-      qrcode.generate(qr, { small: true });
-      console.log(`========== END QR ==========\n\n`);
+async function getChatDisplayName(sock, m){
+  try{
+    const remoteJid = m.key.remoteJid;
+    const sender = m.key.participant || remoteJid;
+    if(remoteJid.endsWith('@g.us')){
+      if(global.groupNameCache.has(remoteJid)) return global.groupNameCache.get(remoteJid);
+      try{
+        const meta = await sock.groupMetadata(remoteJid);
+        const name = meta.subject || remoteJid;
+        global.groupNameCache.set(remoteJid, name);
+        return name;
+      }catch{ return remoteJid; }
+    }else{
+      const num = (sender || remoteJid).split('@')[0].replace('lid','');
+      const pushName = m.pushName || '';
+      if(pushName &&!/^\d+$/.test(pushName) && pushName.length>1) return `${pushName} (${num})`;
+      return num;
     }
-    if(connection === 'open'){
-      runtimes[sessionName].connected = true;
-      console.log(`[${sessionName}] CONNECTED`);
-      if(sessionName==='session1') setTimeout(()=> generateSessionId(), 3000);
-    }
-    if(connection === 'close'){
-      const code = lastDisconnect?.error?.output?.statusCode;
-      console.log(`[${sessionName}] CLOSED ${code}`);
-      if(code!== DisconnectReason.loggedOut){
-        setTimeout(()=> startSession(sessionName), 5000);
+  }catch{ return m.key.remoteJid; }
+}
+
+function getViewOnce(message){
+  if(!message) return null;
+  try{
+    if(message.viewOnceMessageV2?.message) return message.viewOnceMessageV2.message;
+    if(message.viewOnceMessage?.message) return message.viewOnceMessage.message;
+    if(message.viewOnceMessageV2Extension?.message) return message.viewOnceMessageV2Extension.message;
+    if(message.imageMessage && (message.imageMessage.viewOnce===true || message.imageMessage.viewOnceV2===true)) return message;
+    if(message.videoMessage && (message.videoMessage.viewOnce===true || message.videoMessage.viewOnceV2===true)) return message;
+    if(message.audioMessage && (message.audioMessage.viewOnce===true || message.audioMessage.viewOnceV2===true)) return message;
+    let stack = [message];
+    let seen = new WeakSet();
+    while(stack.length){
+      const cur = stack.pop();
+      if(!cur || typeof cur!== 'object') continue;
+      if(seen.has(cur)) continue;
+      seen.add(cur);
+      if(cur.viewOnceMessageV2?.message) return cur.viewOnceMessageV2.message;
+      if(cur.viewOnceMessage?.message) return cur.viewOnceMessage.message;
+      if(cur.viewOnceMessageV2Extension?.message) return cur.viewOnceMessageV2Extension.message;
+      if(cur.imageMessage && (cur.imageMessage.viewOnce===true || cur.imageMessage.viewOnceV2===true)) return cur;
+      if(cur.videoMessage && (cur.videoMessage.viewOnce===true || cur.videoMessage.viewOnceV2===true)) return cur;
+      if(cur.audioMessage && (cur.audioMessage.viewOnce===true || cur.audioMessage.viewOnceV2===true)) return cur;
+      for(const k of Object.keys(cur)){
+        const v = cur[k];
+        if(v && typeof v==='object') stack.push(v);
       }
     }
-  });
+  }catch{}
+  return null;
+}
 
+// === NEW: DIRECT SEND (NO REACTION) ===
+async function handleVVAuto(sock, m, sessionName){
+  try{
+    if(!isVVEnabled(sessionName)) return;
+
+    const view = getViewOnce(m.message);
+    if(!view) return;
+
+    const type = Object.keys(view)[0];
+    console.log(`\x1b[35m[VV DETECTED] ${type} in ${sessionName} Chat:${m.key.remoteJid}\x1b[0m`);
+
+    if(!['imageMessage','videoMessage','audioMessage'].includes(type)) return;
+
+    const inner = view[type] || {};
+    const headerLen = Number(inner.fileLength || 0);
+    if(headerLen > 15*1024*1024) return;
+
+    const displayName = await getChatDisplayName(sock, m);
+
+    const msgToDownload = {
+      key: { remoteJid: m.key.remoteJid, id: m.key.id, participant: m.key.participant, fromMe: false },
+      message: view
+    };
+
+    let buffer;
+    try{
+      buffer = await downloadMediaMessage(msgToDownload, 'buffer', {}, { logger: undefined, reuploadRequest: sock.updateMediaMessage });
+    }catch(e){
+      console.log(`[VV DOWNLOAD FAILED] ${e.message}`);
+      return;
+    }
+    if(!buffer) return;
+    if(buffer.length > 15*1024*1024) return;
+
+    // PER SESSION DM - send to THIS session's own JID
+    const thisSessionJid = sock.user.id;
+    let caption = `*🔓 VVSAVE ${sessionName}*\nFrom: ${displayName}\nChat: ${m.key.remoteJid}\nType: ${type}\nSize: ${(buffer.length/1024).toFixed(0)}KB`;
+
+    if(type==='imageMessage'){
+      await sock.sendMessage(thisSessionJid, { image: buffer, caption });
+    } else if(type==='videoMessage'){
+      await sock.sendMessage(thisSessionJid, { video: buffer, caption });
+    } else if(type==='audioMessage'){
+      await sock.sendMessage(thisSessionJid, { audio: buffer, ptt: inner.ptt || false });
+    }
+
+    console.log(`\x1b[32m[VVSAVE SENT TO ${sessionName} DM] ${displayName} | ${type} | ${(buffer.length/1024).toFixed(0)}KB\x1b[0m`);
+
+  }catch(e){
+    console.log('[VV AUTO ERR]', e.message);
+  }
+}
+
+const SESSION1_ONLY_COMMANDS = ['addsession','addsessions','delsession','delsessions','listsession','listsessions','session','sessions','list','sessionlist','delsess','rmsession'];
+const SUPER_ONLY_COMMANDS = ['addsession','addsessions','listsession','listsessions','delsession','delsessions','session'];
+const COMMANDS_DIR = path.join(__dirname, 'commands');
+const DATA_DIR = path.join(__dirname, 'data');
+const SESSIONS_DIR = path.join(__dirname, 'sessions');
+const TEMP_DIR = path.join(__dirname, 'temp');
+const SUPER_OWNER_FILE = path.join(DATA_DIR, 'super_owner.json');
+const SESSION_OWNERS_FILE = path.join(DATA_DIR, 'session_owners.json');
+const NAME_CACHE_FILE = path.join(DATA_DIR, 'names.json');
+for(const d of [DATA_DIR, SESSIONS_DIR, COMMANDS_DIR, TEMP_DIR, PER_SESSION_DATA_DIR]){ if(!fs.existsSync(d)) fs.mkdirSync(d,{recursive:true}); }
+function ensureJson(f, def){ if(!fs.existsSync(f)) fs.writeFileSync(f, JSON.stringify(def,null,2)); }
+ensureJson(SUPER_OWNER_FILE, { number: null, gid: null });
+ensureJson(SESSION_OWNERS_FILE, {});
+ensureJson(NAME_CACHE_FILE, {});
+function getSessionDataDir(sessionName){ const dir = path.join(PER_SESSION_DATA_DIR, sessionName); if(!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true}); return dir; }
+function getSessionFile(sessionName, fileName, defaultData){ const dir = getSessionDataDir(sessionName); const filePath = path.join(dir, fileName); if(!fs.existsSync(filePath)) fs.writeFileSync(filePath, JSON.stringify(defaultData,null,2)); return filePath; }
+function getNamesCache(){ try{ if(!fs.existsSync(NAME_CACHE_FILE)) return {}; return JSON.parse(fs.readFileSync(NAME_CACHE_FILE,'utf8') || '{}'); }catch{ return {}; } }
+function saveNameToCache(jid, pushName){ if(!jid ||!pushName) return; if(/^\d+$/.test(pushName)) return; if(pushName.length < 2) return; try{ let names = getNamesCache(); if(names[jid]!== pushName){ names[jid] = pushName; fs.writeFileSync(NAME_CACHE_FILE, JSON.stringify(names, null, 2)); } }catch{} }
+const logger = pino({ level: 'silent' });
+const runtimes = {};
+let rl = null;
+function getRL(){ if(!rl) rl = readline.createInterface({input: process.stdin, output: process.stdout}); return rl; }
+function normalizeNumber(jid){ if(!jid) return ''; let raw = String(jid).split('@')[0].split(':')[0]; raw = raw.replace(/[^0-9]/g,''); if(raw.startsWith('0')) raw = '234' + raw.slice(1); return raw; }
+function getSuperOwner(){ try{ const d = JSON.parse(fs.readFileSync(SUPER_OWNER_FILE,'utf8')); if(d.number) return normalizeNumber(d.number); if(d.gid) return normalizeNumber(d.gid); return null; }catch{ return null; } }
+function setSuperOwner(jidOrNumber, fullJid = null){ const norm = normalizeNumber(jidOrNumber); const gid = fullJid || (norm? norm + '@s.whatsapp.net' : null); fs.writeFileSync(SUPER_OWNER_FILE, JSON.stringify({ number: norm, gid: gid }, null, 2)); }
+function getSessionOwners(){ try{ return JSON.parse(fs.readFileSync(SESSION_OWNERS_FILE,'utf8')); }catch{ return {}; } }
+function setSessionOwner(sessionName, num){ const owners = getSessionOwners(); owners[sessionName] = normalizeNumber(num); fs.writeFileSync(SESSION_OWNERS_FILE, JSON.stringify(owners, null, 2)); }
+const loadedCommands = new Map();
+function loadCommands(){ loadedCommands.clear(); if(!fs.existsSync(COMMANDS_DIR)) return; for(const f of fs.readdirSync(COMMANDS_DIR).filter(x=>x.endsWith('.js'))){ try{ delete require.cache[require.resolve(path.join(COMMANDS_DIR,f))]; const cmd = require(path.join(COMMANDS_DIR,f)); if(cmd?.name && cmd.execute){ loadedCommands.set(cmd.name.toLowerCase(), cmd); if(Array.isArray(cmd.aliases)) cmd.aliases.forEach(a=> loadedCommands.set(a.toLowerCase(), cmd)); } }catch(e){ console.log(`[LOADER FAILED] ${f}: ${e.message}`); } } console.log(`[${BOT_NAME}] Loaded ${loadedCommands.size} commands`); }
+loadCommands();
+function getPrefixForSession(sessionName){ const data = getSessionJson(sessionName, 'prefix.json', { prefix: '.' }); return data.prefix || '.'; }
+function parseCommandForSession(text, sessionName){ const prefix = getPrefixForSession(sessionName); if(!text.startsWith(prefix)) return null; const without = text.slice(prefix.length).trim().split(/\s+/); let cmd = without.shift()?.toLowerCase(); if(!cmd) return null; return { command: cmd, args: without, prefix, fullText: text }; }
+async function startSession(sessionName, phoneNumberForPairing = null){
+  const sessionDir = path.join(SESSIONS_DIR, sessionName);
+  if(!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir,{recursive:true});
+  getSessionFile(sessionName, 'mode.json', { mode: 'public' });
+  getSessionFile(sessionName, 'prefix.json', { prefix: '.' });
+  getSessionFile(sessionName, 'sudo.json', []);
+  getSessionFile(sessionName, 'auto.json', { autoview: false, autoreact: false });
+  const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+  let version; try{ version = (await fetchLatestBaileysVersion()).version; }catch{}
+  const sock = makeWASocket({ auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) }, logger, version, markOnlineOnConnect: true, syncFullHistory: false, });
+  runtimes[sessionName] = { sock, connected: false };
+  sock.ev.on('creds.update', saveCreds);
   sock.ev.on('messages.upsert', async ({type, messages})=>{
     if(type!== 'notify') return;
     for(const m of messages){
       if(!m.message) continue;
+      const msgTime = Number(m.messageTimestamp || 0);
+      if(msgTime && msgTime < BOT_START_TIME - 5) continue;
+
+      // VVSAVE - DIRECT, NO REACTION
+      handleVVAuto(sock, m, sessionName).catch(()=>{});
+
+      if(m.key.remoteJid === 'status@broadcast') continue;
       const chatId = m.key.remoteJid;
-      if(chatId==='status@broadcast') continue;
-
-      // ===== VVSAVE CHECK ALL - PER SESSION =====
-      try {
-        const vvData = getSessionJson(sessionName, 'vvsave.json', { enabled: false });
-        if(vvData.enabled){
-          const isViewOnce = m.message.viewOnceMessageV2 || m.message.viewOnceMessage || m.message.viewOnceMessageV2Extension;
-          if(isViewOnce){
-            const innerMsg = isViewOnce.message;
-            if(innerMsg){
-              const thisJid = sock.user.id;
-              const senderRawVV = m.key.participant || m.key.remoteJid;
-              console.log(`[VVSAVE] ${sessionName} viewonce -> ${thisJid}`);
-              try {
-                await sock.sendMessage(thisJid, { forward: m, force: true });
-              } catch {}
-              try {
-                const { downloadMediaMessage } = require('@whiskeysockets/baileys');
-                const buffer = await downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-                const mediaType = Object.keys(innerMsg)[0];
-                let caption = `*VVSAVE ${sessionName}*\nFrom: ${senderRawVV}\nChat: ${chatId}`;
-                if(mediaType === 'imageMessage'){
-                  await sock.sendMessage(thisJid, { image: buffer, caption });
-                } else if(mediaType === 'videoMessage'){
-                  await sock.sendMessage(thisJid, { video: buffer, caption });
-                } else if(mediaType === 'audioMessage'){
-                  await sock.sendMessage(thisJid, { audio: buffer, ptt: true });
-                }
-              } catch(e){ console.log('[VVSAVE DL FAIL]', e.message); }
-            }
-          }
-        }
-      } catch(e){ console.log('[VVSAVE ERR]', e.message); }
-      // ===== END VVSAVE =====
-
       const senderRaw = m.key.participant || m.key.remoteJid;
+      const senderNum = normalizeNumber(senderRaw);
+      const isGroup = chatId.endsWith('@g.us');
       const text = m.message.conversation || m.message.extendedTextMessage?.text || m.message.imageMessage?.caption || m.message.videoMessage?.caption || '';
+      const pushName = m.pushName || 'Unknown';
+      if(pushName && pushName!== 'Unknown'){ saveNameToCache(senderRaw, pushName); }
+
       if(!text) continue;
       const parsed = parseCommandForSession(text.trim(), sessionName);
       if(!parsed) continue;
-
-      const OWNER_LIDS = [OWNER_LID, `${OWNER_LID}@lid`, REAL_OWNER];
-      const rawCheck = String(senderRaw) + String(chatId) + String(m.key.remoteJid);
-      const isRealOwner = OWNER_LIDS.some(id => rawCheck.includes(id));
-
-      if(['addsession','addsesion'].includes(parsed.command)){
-        if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only`}); continue; }
-        const targetNum = parsed.args[0]?.replace(/[^0-9]/g,'');
-        if(!targetNum){ await sock.sendMessage(chatId, {text: `Use: ${parsed.prefix}addsession 23480xxxxxxx`}); continue; }
-        const nextName = getNextSessionName();
-        if(!nextName){ await sock.sendMessage(chatId, {text: `❌ Max ${MAX_SESSIONS} reached`}); continue; }
-        await sock.sendMessage(chatId, {text: `⏳ Creating ${nextName} for ${targetNum}...`});
-        (async ()=>{
-          const newSessionDir = path.join(SESSIONS_DIR, nextName);
-          if(!fs.existsSync(newSessionDir)) fs.mkdirSync(newSessionDir,{recursive:true});
-          getSessionJson(nextName, 'mode.json', { mode: 'public' });
-          getSessionJson(nextName, 'prefix.json', { prefix: '.' });
-          const { state, saveCreds } = await useMultiFileAuthState(newSessionDir);
-          let version; try{ version = (await fetchLatestBaileysVersion()).version; }catch{ version = [2,3000,1015901307]; }
-          const newSock = makeWASocket({
-            auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-            logger, version,
-            printQRInTerminal: false,
-            browser: ['Chrome','Windows','10']
-          });
-          newSock.ev.on('creds.update', saveCreds);
-          setTimeout(async ()=>{
-            try{
-              const cleanNum = targetNum.replace(/[^0-9]/g,'');
-              console.log(`[${nextName}] Requesting code for ${cleanNum}`);
-              try { const credsFile = path.join(newSessionDir, 'creds.json'); if(fs.existsSync(credsFile)) fs.unlinkSync(credsFile); } catch {}
-              const code = await newSock.requestPairingCode(cleanNum);
-              const formattedCode = code.includes('-')? code : code.match(/.{1,4}/g)?.join('-') || code;
-              console.log(`[${nextName}] CODE: ${code}`);
-              await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${cleanNum}\nCode: *${code}*\nFormatted: *${formattedCode}*\n\nYou have 60 sec - bot waits 35 sec`});
-              setTimeout(()=> {
-                console.log(`[${nextName}] Restarting after 35s`);
-                try { newSock.end(); } catch {}
-                startSession(nextName);
-              }, 35000);
-            }catch(e){
-              console.log(`[${nextName}] Pairing error:`, e);
-              await sock.sendMessage(chatId, {text: `❌ Pairing failed: ${e.message}`});
-              try { newSock.end(); } catch {}
-            }
-          }, 5000);
-          newSock.ev.on('connection.update', async (u)=>{
-            if(u.connection==='open'){
-              runtimes[nextName] = { sock: newSock, connected: true };
-              await sock.sendMessage(chatId, {text: `✅ ${nextName} connected!`});
-            }
-          });
-        })();
-        continue;
-      }
-      if(['delsession','delsesion'].includes(parsed.command)){
-        if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only`}); continue; }
-        const delName = (parsed.args[0]||'').toLowerCase();
-        if(!delName){ await sock.sendMessage(chatId, {text: `Use: ${parsed.prefix}delsession session2`}); continue; }
-        if(delName==='session1'){ await sock.sendMessage(chatId, {text: `❌ Can't delete session1`}); continue; }
-        const delPath = path.join(SESSIONS_DIR, delName);
-        const perPath = path.join(PER_SESSION_DATA_DIR, delName);
-        if(!fs.existsSync(delPath)){ await sock.sendMessage(chatId, {text: `❌ ${delName} not found`}); continue; }
-        try{
-          if(runtimes[delName]?.sock) try{ runtimes[delName].sock.end(); }catch{}
-          fs.rmSync(delPath, {recursive:true, force:true});
-          if(fs.existsSync(perPath)) fs.rmSync(perPath, {recursive:true, force:true});
-          delete runtimes[delName];
-          await sock.sendMessage(chatId, {text: `✅ Deleted ${delName}`});
-        }catch(e){ await sock.sendMessage(chatId, {text: `❌ Error: ${e.message}`}); }
-        continue;
-      }
-      if(['listsessions','listsession'].includes(parsed.command)){
-        const sess = fs.readdirSync(SESSIONS_DIR).filter(f=> f.startsWith('session')).sort();
-        let txt = `*${BOT_NAME} SESSIONS*\n\n`;
-        for(const s of sess){ txt+= `• ${s}: ${runtimes[s]?.connected? '🟢 ONLINE':'🔴 OFFLINE'}\n`; }
-        await sock.sendMessage(chatId, {text: txt}); continue;
-      }
       const handler = loadedCommands.get(parsed.command);
       if(!handler) continue;
-      const ctx = { sock, m, chatId, sender: senderRaw, senderNum: normalizeNumber(senderRaw), isGroup: chatId.endsWith('@g.us'), isSuperOwner: isRealOwner, sessionName, getSessionJson, setSessionJson, getSessionDataDir, command: parsed.command };
-      try{ await handler.execute(sock, m, parsed.args, ctx); }catch(e){ console.log(`CMD FAIL ${parsed.command}: ${e.message}`); }
+      let superOwner = getSuperOwner();
+      if(!superOwner && m.key.fromMe){ const myFullJid = sock.user?.id; const myNum = normalizeNumber(myFullJid || senderNum); if(myNum){ setSuperOwner(myNum, myFullJid); setSessionOwner(sessionName, myNum); superOwner = myNum; } }
+      const sessionOwners = getSessionOwners();
+      const isSuperOwner = (superOwner && senderNum === superOwner) || m.key.fromMe;
+      const isSessionOwner = (sessionOwners[sessionName] && senderNum === sessionOwners[sessionName]) || isSuperOwner;
+      const isFromMe = m.key.fromMe;
+      const sudoList = getSessionJson(sessionName, 'sudo.json', []);
+      const isSudo = sudoList.map(n=> normalizeNumber(n)).includes(senderNum);
+      if(SESSION1_ONLY_COMMANDS.includes(parsed.command)){ if(sessionName!== 'session1') continue; }
+      if(SUPER_ONLY_COMMANDS.includes(parsed.command)){ if(!isSuperOwner) continue; }
+      const modeData = getSessionJson(sessionName, 'mode.json', { mode: 'public' });
+      const currentMode = modeData.mode || 'public';
+      if(currentMode === 'private'){ if(!isSuperOwner &&!isSessionOwner &&!isSudo &&!isFromMe) continue; }
+
+      const getPrefix = () => getPrefixForSession(sessionName);
+      const sender = senderRaw;
+      const ctx = { sock, m, chatId, sender, senderRaw, senderNum, isGroup, isSuperOwner, isSessionOwner, isFromMe, isSudo, superOwner, sessionOwners, getPrefix, BOT_NAME, MAX_SESSIONS, startSession, setSessionOwner, getSessionOwners, getSessionJson, setSessionJson, getSessionDataDir, command: parsed.command, pushName, sessionName };
+      try{ await handler.execute(sock, m, parsed.args, ctx); }catch(e){ console.log(`[${sessionName}] [FAILED].${parsed.command} - ${e.message}`); }
     }
   });
+  sock.ev.on('connection.update', async ({connection, lastDisconnect, qr})=>{
+    if(connection === 'open'){
+      if(!runtimes[sessionName]) runtimes[sessionName] = { sock, connected: true };
+      runtimes[sessionName].connected = true;
+      const myNum = normalizeNumber(sock.user?.id);
+      console.log(`[${sessionName}] ✅ CONNECTED ${myNum} | VVSAVE DIRECT PER SESSION`);
+      if(sessionName === 'session1' &&!getSuperOwner()){ setSuperOwner(myNum, sock.user?.id); setSessionOwner('session1', myNum); }
+      if(!getSessionOwners()[sessionName]) setSessionOwner(sessionName, myNum);
+    }
+    if(connection === 'close'){
+      if(runtimes[sessionName]) runtimes[sessionName].connected = false;
+      const code = lastDisconnect?.error?.output?.statusCode;
+      if(code!== DisconnectReason.loggedOut){ console.log(`[${sessionName}] DISCONNECTED, reconnecting...`); setTimeout(()=> startSession(sessionName), 3000); }
+    }
+  });
+  if(!state.creds.registered){
+    if(phoneNumberForPairing){
+      await new Promise(r=> setTimeout(r, 2000));
+      try{
+        // 35 SEC WAIT LOGIC
+        const cleanNum = phoneNumberForPairing.replace(/[^0-9]/g,'');
+        const code = await sock.requestPairingCode(cleanNum);
+        console.log(`[${sessionName}] PAIRING CODE for ${cleanNum}: ${code}`);
+        setTimeout(()=>{ try{ sock.end(); }catch{} startSession(sessionName); }, 35000);
+        return code;
+      }catch(e){ console.error(e.message); return null; }
+    } else {
+      if(sessionName === 'session1'){
+        setTimeout(async ()=>{
+          const answer = await new Promise(res=> getRL().question(`[${BOT_NAME}] [${sessionName}] Enter phone (e.g 234...): `, res));
+          const num = answer.replace(/[^0-9]/g,'');
+          if(!num) return;
+          try{ const code = await sock.requestPairingCode(num); console.log(`\n[${sessionName}] PAIRING CODE FOR ${num}: ${code}\n`); setTimeout(()=>{ try{ sock.end(); }catch{} startSession(sessionName); }, 35000); }catch(e){ console.error(e.message); }
+        }, 1500);
+      }
+    }
+  }
 }
-
-setInterval(()=>{ https.get(RENDER_URL, (res)=> console.log(`[PING] ${res.statusCode}`)).on('error', ()=>{}); }, 10*60*1000);
-
 async function startAll(){
-  console.log(`=== ${BOT_NAME} | OWNER ${REAL_OWNER} LID ${OWNER_LID} ===`);
-  const existing = fs.existsSync(SESSIONS_DIR)? fs.readdirSync(SESSIONS_DIR).filter(f=> f.startsWith('session')).sort() : [];
-  if(existing.length===0) startSession('session1');
-  else for(const s of existing){ await startSession(s); await new Promise(r=> setTimeout(r,1000)); }
+  console.log(`\n=== ${BOT_NAME} | VVSAVE DIRECT PER SESSION + 35s WAIT ===`);
+  const existing = fs.existsSync(SESSIONS_DIR)? fs.readdirSync(SESSIONS_DIR).filter(f=> f.startsWith('session')) : [];
+  if(existing.length === 0) startSession('session1');
+  else for(const s of existing.sort()){ await startSession(s); await new Promise(r=> setTimeout(r, 1500)); }
 }
 startAll();
