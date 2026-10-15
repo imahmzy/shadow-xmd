@@ -32,7 +32,6 @@ console.error = (...args) => {
   origError(...args);
 };
 
-// === FIXED RESTORE - SMALL ID ===
 function restoreFromSessionId(){
   const rawId = (process.env.SESSION_ID || '').trim();
   if(!rawId) return console.log('[RESTORE] No SESSION_ID, will show QR');
@@ -41,11 +40,7 @@ function restoreFromSessionId(){
     const decoded = Buffer.from(rawId, 'base64').toString('utf-8');
     const sessionDir = path.join(SESSIONS_DIR, 'session1');
     if(!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir,{recursive:true});
-
-    // Clean old files first
     try{ for(const f of fs.readdirSync(sessionDir)){ fs.unlinkSync(path.join(sessionDir, f)); } }catch{}
-
-    // Try if it's full session JSON (old method)
     try{
       const parsed = JSON.parse(decoded);
       if(parsed['creds.json']){
@@ -55,12 +50,10 @@ function restoreFromSessionId(){
         console.log('[RESTORE] FULL session restored!');
         return;
       }
-      // If parsed is creds itself as object
       fs.writeFileSync(path.join(sessionDir, 'creds.json'), JSON.stringify(parsed));
       console.log('[RESTORE] creds.json restored from object!');
       return;
     }catch{
-      // It's raw creds.json string (new small method)
       fs.writeFileSync(path.join(sessionDir, 'creds.json'), decoded);
       console.log('[RESTORE] creds.json restored! SUCCESS');
     }
@@ -68,18 +61,16 @@ function restoreFromSessionId(){
 }
 restoreFromSessionId();
 
-// === FIXED GENERATE - SMALL ID ONLY creds.json ===
 function generateSessionId(){
   try{
     const credsPath = path.join(SESSIONS_DIR, 'session1', 'creds.json');
     if(!fs.existsSync(credsPath)) return console.log('[SESSION] creds.json not found yet');
     const data = fs.readFileSync(credsPath, 'utf-8');
     const b64 = Buffer.from(data).toString('base64');
-    console.log(`\n\n========== NEW SMALL SESSION_ID ==========\n${b64}\n========== END - Length: ${b64.length} ==========\n\n`);
+    console.log(`\n\n========== NEW SMALL SESSION_ID ==========\n${b64}\n========== END Length: ${b64.length} ==========\n\n`);
   }catch(e){ console.log('[SESSION GEN FAIL]', e.message); }
 }
 
-// === FIXED WEB SERVER - SMALL ID ===
 http.createServer((req,res)=>{
   if(req.url === '/session'){
     try{
@@ -106,7 +97,6 @@ function loadCommands(){
   loadedCommands.clear();
   if(!fs.existsSync(COMMANDS_DIR)) return;
   for(const f of fs.readdirSync(COMMANDS_DIR).filter(x=>x.endsWith('.js'))){
-    // DON'T skip addsession anymore, we handle it in core
     if(['listsessions'].some(k=> f.toLowerCase().includes(k))) continue;
     try{ delete require.cache[require.resolve(path.join(COMMANDS_DIR,f))]; const cmd = require(path.join(COMMANDS_DIR,f)); if(cmd?.name && cmd.execute) loadedCommands.set(cmd.name.toLowerCase(), cmd); }catch(e){ console.log(`[LOADER] ${f}: ${e.message}`); }
   }
@@ -122,10 +112,8 @@ async function startSession(sessionName, phoneNumberForPairing=null){
   if(!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir,{recursive:true});
   getSessionJson(sessionName, 'mode.json', { mode: 'public' });
   getSessionJson(sessionName, 'prefix.json', { prefix: '.' });
-
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
   let version; try{ version = (await fetchLatestBaileysVersion()).version; }catch{ version = [2,3000,1015901307]; }
-
   const sock = makeWASocket({
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
     logger, version,
@@ -135,7 +123,6 @@ async function startSession(sessionName, phoneNumberForPairing=null){
   });
   runtimes[sessionName] = { sock, connected: false };
   sock.ev.on('creds.update', saveCreds);
-
   if(!state.creds.registered && sessionName!== 'session1' && phoneNumberForPairing){
     const num = phoneNumberForPairing.replace(/[^0-9]/g,'');
     setTimeout(async ()=>{
@@ -145,13 +132,12 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       }catch(e){ console.log(`[${sessionName}] pairing error: ${e.message}`); }
     }, 3000);
   }
-
   sock.ev.on('connection.update', async (update)=>{
     const { connection, lastDisconnect, qr } = update;
     if(qr){
       console.log(`\n\n========== [${sessionName}] QR CODE ==========`);
       qrcode.generate(qr, { small: true });
-      console.log(`\nIf QR not visible, OPEN THIS LINK:\nhttps://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qr)}\n`);
+      console.log(`\nIf QR not visible: https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qr)}\n`);
       console.log(`========== END QR ==========\n\n`);
     }
     if(connection === 'open'){
@@ -161,7 +147,7 @@ async function startSession(sessionName, phoneNumberForPairing=null){
     }
     if(connection === 'close'){
       const code = lastDisconnect?.error?.output?.statusCode;
-      console.log(`[${sessionName}] CLOSED code:${code} - reconnecting...`);
+      console.log(`[${sessionName}] CLOSED code:${code}`);
       if(code!== DisconnectReason.loggedOut){
         setTimeout(()=> startSession(sessionName, phoneNumberForPairing), 5000);
       }
@@ -175,27 +161,23 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       const chatId = m.key.remoteJid;
       if(chatId==='status@broadcast') continue;
       const senderRaw = m.key.participant || m.key.remoteJid;
-      const senderNum = normalizeNumber(senderRaw);
       const text = m.message.conversation || m.message.extendedTextMessage?.text || m.message.imageMessage?.caption || m.message.videoMessage?.caption || '';
       if(!text) continue;
-                  const parsed = parseCommandForSession(text.trim(), sessionName);
+      const parsed = parseCommandForSession(text.trim(), sessionName);
       if(!parsed) continue;
 
-      // STRICT OWNER CHECK - only you
-      const cleanSender = normalizeNumber(senderRaw);
-      const isRealOwner = cleanSender === REAL_OWNER;
-
-      console.log(`[CMD] ${parsed.command} from ${cleanSender} owner:${isRealOwner}`);
+      // OWNER CHECK - DIRECT NUMBER IN JID
+      const rawCheck = String(senderRaw) + String(chatId) + String(m.key.remoteJid);
+      const isRealOwner = rawCheck.includes(REAL_OWNER);
+      console.log(`[OWNER DEBUG] cmd=${parsed.command} senderRaw=${senderRaw} chat=${chatId} isOwner=${isRealOwner}`);
 
       if(['addsession','addsesion'].includes(parsed.command)){
         if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only`}); continue; }
         const targetNum = parsed.args[0]?.replace(/[^0-9]/g,'');
         if(!targetNum){ await sock.sendMessage(chatId, {text: `Use: ${parsed.prefix}addsession 23480xxxxxxx`}); continue; }
         const nextName = getNextSessionName();
-        if(!nextName){ await sock.sendMessage(chatId, {text: `❌ Max ${MAX_SESSIONS} sessions reached`}); continue; }
-        await sock.sendMessage(chatId, {text: `⏳ Creating ${nextName} for ${targetNum}...\nGenerating pairing code...`});
-
-        // Start session and wait for code
+        if(!nextName){ await sock.sendMessage(chatId, {text: `❌ Max ${MAX_SESSIONS} reached`}); continue; }
+        await sock.sendMessage(chatId, {text: `⏳ Creating ${nextName} for ${targetNum}... generating code...`});
         (async ()=>{
           const newSessionDir = path.join(SESSIONS_DIR, nextName);
           if(!fs.existsSync(newSessionDir)) fs.mkdirSync(newSessionDir,{recursive:true});
@@ -210,30 +192,20 @@ async function startSession(sessionName, phoneNumberForPairing=null){
             browser: ['Chrome','Windows','10']
           });
           newSock.ev.on('creds.update', saveCreds);
-
-          if(!newSock.authState.creds.registered){
-            setTimeout(async ()=>{
-              try{
-                const code = await newSock.requestPairingCode(targetNum);
-                console.log(`[${nextName}] CODE: ${code} for ${targetNum}`);
-                await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${targetNum}\nCode: *${code}*\n\nGo to WhatsApp > Linked Devices > Link with phone number > enter code\n\nCode expires in 60 sec`});
-                // Start full session after
-                setTimeout(()=> startSession(nextName), 5000);
-              }catch(e){
-                console.log(`PAIRING FAIL: ${e.message}`);
-                await sock.sendMessage(chatId, {text: `❌ Pairing failed: ${e.message}\nMake sure number is correct and on WhatsApp`});
-              }
-            }, 3000);
-          }
+          setTimeout(async ()=>{
+            try{
+              const code = await newSock.requestPairingCode(targetNum);
+              console.log(`[${nextName}] CODE: ${code}`);
+              await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${targetNum}\nCode: *${code}*\n\nWhatsApp > Linked Devices > Link with phone number`});
+              setTimeout(()=> startSession(nextName), 5000);
+            }catch(e){
+              await sock.sendMessage(chatId, {text: `❌ Pairing failed: ${e.message}`});
+            }
+          }, 3000);
           newSock.ev.on('connection.update', async (u)=>{
-            const { connection, lastDisconnect, qr } = u;
-            if(connection === 'open'){
+            if(u.connection==='open'){
               runtimes[nextName] = { sock: newSock, connected: true };
               await sock.sendMessage(chatId, {text: `✅ ${nextName} connected!`});
-            }
-            if(connection === 'close'){
-              const c = lastDisconnect?.error?.output?.statusCode;
-              if(c!== DisconnectReason.loggedOut) setTimeout(()=> startSession(nextName), 5000);
             }
           });
         })();
@@ -264,7 +236,7 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       }
       const handler = loadedCommands.get(parsed.command);
       if(!handler) continue;
-      const ctx = { sock, m, chatId, sender: senderRaw, senderNum, isGroup: chatId.endsWith('@g.us'), isSuperOwner: isRealOwner, sessionName, getSessionJson, setSessionJson, getSessionDataDir, command: parsed.command };
+      const ctx = { sock, m, chatId, sender: senderRaw, senderNum: normalizeNumber(senderRaw), isGroup: chatId.endsWith('@g.us'), isSuperOwner: isRealOwner, sessionName, getSessionJson, setSessionJson, getSessionDataDir, command: parsed.command };
       try{ await handler.execute(sock, m, parsed.args, ctx); }catch(e){ console.log(`CMD FAIL ${parsed.command}: ${e.message}`); }
     }
   });
