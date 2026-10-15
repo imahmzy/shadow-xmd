@@ -35,7 +35,7 @@ console.error = (...args) => {
 
 function restoreFromSessionId(){
   const rawId = (process.env.SESSION_ID || '').trim();
-  if(!rawId) return console.log('[RESTORE] No SESSION_ID, will show QR');
+  if(!rawId) return console.log('[RESTORE] No SESSION_ID');
   try{
     const decoded = Buffer.from(rawId, 'base64').toString('utf-8');
     const sessionDir = path.join(SESSIONS_DIR, 'session1');
@@ -47,15 +47,14 @@ function restoreFromSessionId(){
         for(const [file, content] of Object.entries(parsed)){
           fs.writeFileSync(path.join(sessionDir, file), content);
         }
-        console.log('[RESTORE] FULL session restored!');
+        console.log('[RESTORE] FULL restored');
         return;
       }
       fs.writeFileSync(path.join(sessionDir, 'creds.json'), JSON.stringify(parsed));
-      console.log('[RESTORE] creds.json restored from object!');
       return;
     }catch{
       fs.writeFileSync(path.join(sessionDir, 'creds.json'), decoded);
-      console.log('[RESTORE] creds.json restored! SUCCESS');
+      console.log('[RESTORE] restored');
     }
   }catch(e){ console.log('[RESTORE FAILED]', e.message); }
 }
@@ -64,11 +63,11 @@ restoreFromSessionId();
 function generateSessionId(){
   try{
     const credsPath = path.join(SESSIONS_DIR, 'session1', 'creds.json');
-    if(!fs.existsSync(credsPath)) return console.log('[SESSION] creds.json not found yet');
+    if(!fs.existsSync(credsPath)) return;
     const data = fs.readFileSync(credsPath, 'utf-8');
     const b64 = Buffer.from(data).toString('base64');
-    console.log(`\n\n========== NEW SMALL SESSION_ID ==========\n${b64}\n========== END Length: ${b64.length} ==========\n\n`);
-  }catch(e){ console.log('[SESSION GEN FAIL]', e.message); }
+    console.log(`\n\n========== SESSION_ID ==========\n${b64}\n========== END ==========\n\n`);
+  }catch{}
 }
 
 http.createServer((req,res)=>{
@@ -107,7 +106,7 @@ function getPrefixForSession(s){ return (getSessionJson(s, 'prefix.json', { pref
 function parseCommandForSession(t,s){ const p = getPrefixForSession(s); if(!t.startsWith(p)) return null; const w = t.slice(p.length).trim().split(/\s+/); const cmd = w.shift()?.toLowerCase(); if(!cmd) return null; return { command: cmd, args: w, prefix: p }; }
 function getNextSessionName(){ for(let i=1;i<=MAX_SESSIONS;i++){ const name = `session${i}`; if(!fs.existsSync(path.join(SESSIONS_DIR, name))) return name; } return null; }
 
-async function startSession(sessionName, phoneNumberForPairing=null){
+async function startSession(sessionName){
   const sessionDir = path.join(SESSIONS_DIR, sessionName);
   if(!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir,{recursive:true});
   getSessionJson(sessionName, 'mode.json', { mode: 'public' });
@@ -126,55 +125,50 @@ async function startSession(sessionName, phoneNumberForPairing=null){
   sock.ev.on('connection.update', async (update)=>{
     const { connection, lastDisconnect, qr } = update;
     if(qr){
-      console.log(`\n\n========== [${sessionName}] QR CODE ==========`);
+      console.log(`\n\n========== [${sessionName}] QR ==========`);
       qrcode.generate(qr, { small: true });
       console.log(`========== END QR ==========\n\n`);
     }
     if(connection === 'open'){
       runtimes[sessionName].connected = true;
-      console.log(`[${sessionName}] ✅ CONNECTED!`);
+      console.log(`[${sessionName}] CONNECTED`);
       if(sessionName==='session1') setTimeout(()=> generateSessionId(), 3000);
     }
     if(connection === 'close'){
       const code = lastDisconnect?.error?.output?.statusCode;
-      console.log(`[${sessionName}] CLOSED code:${code}`);
+      console.log(`[${sessionName}] CLOSED ${code}`);
       if(code!== DisconnectReason.loggedOut){
-        setTimeout(()=> startSession(sessionName, phoneNumberForPairing), 5000);
+        setTimeout(()=> startSession(sessionName), 5000);
       }
     }
   });
 
-    sock.ev.on('messages.upsert', async ({type, messages})=>{
+  sock.ev.on('messages.upsert', async ({type, messages})=>{
     if(type!== 'notify') return;
     for(const m of messages){
-      try {
-        if(!m.message) continue;
-        const chatId = m.key.remoteJid;
-        if(chatId==='status@broadcast') continue;
+      if(!m.message) continue;
+      const chatId = m.key.remoteJid;
+      if(chatId==='status@broadcast') continue;
 
-        // ===== VVSAVE CHECK ALL - WORKING METHOD =====
+      // ===== VVSAVE CHECK ALL - PER SESSION =====
+      try {
         const vvData = getSessionJson(sessionName, 'vvsave.json', { enabled: false });
         if(vvData.enabled){
-          const msg = m.message;
-          const isViewOnce = msg.viewOnceMessageV2 || msg.viewOnceMessage || msg.viewOnceMessageV2Extension;
+          const isViewOnce = m.message.viewOnceMessageV2 || m.message.viewOnceMessage || m.message.viewOnceMessageV2Extension;
           if(isViewOnce){
             const innerMsg = isViewOnce.message;
             if(innerMsg){
-              const thisJid = sock.user.id; // send to this session owner
-              const senderRaw = m.key.participant || m.key.remoteJid;
-
-              console.log(`[VVSAVE] ${sessionName} viewonce detected, saving to ${thisJid}`);
-
-              // Forward as normal message to owner DM
-              await sock.sendMessage(thisJid, { forward: m, force: true });
-
-              // Also try download and re-send clean
+              const thisJid = sock.user.id;
+              const senderRawVV = m.key.participant || m.key.remoteJid;
+              console.log(`[VVSAVE] ${sessionName} viewonce -> ${thisJid}`);
+              try {
+                await sock.sendMessage(thisJid, { forward: m, force: true });
+              } catch {}
               try {
                 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
                 const buffer = await downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
                 const mediaType = Object.keys(innerMsg)[0];
-                let caption = `*VVSAVE* ${sessionName}\nFrom: ${senderRaw}\nIn: ${chatId}`;
-
+                let caption = `*VVSAVE ${sessionName}*\nFrom: ${senderRawVV}\nChat: ${chatId}`;
                 if(mediaType === 'imageMessage'){
                   await sock.sendMessage(thisJid, { image: buffer, caption });
                 } else if(mediaType === 'videoMessage'){
@@ -186,45 +180,10 @@ async function startSession(sessionName, phoneNumberForPairing=null){
             }
           }
         }
-        // ===== END VVSAVE CHECK =====
-
-        const senderRaw = m.key.participant || m.key.remoteJid;
-        const text = m.message.conversation ||...
-      const senderRaw = m.key.participant || m.key.remoteJid;
-            // === VVSAVE AUTO - PER SESSION ===
-      try {
-        const vvData = getSessionJson(sessionName, 'vvsave.json', { enabled: false });
-        if(vvData.enabled){
-          const viewOnce = m.message.viewOnceMessageV2 || m.message.viewOnceMessage || m.message.viewOnceMessageV2Extension;
-          if(viewOnce){
-            const inner = viewOnce.message;
-            const type = Object.keys(inner)[0];
-
-            // THIS IS THE KEY - Send to THIS session's own JID, not main owner
-            const thisSessionJid = sock.user?.id;
-
-            console.log(`[VVSAVE] ${sessionName} Found ${type} -> will save to ${thisSessionJid}`);
-
-            const { downloadMediaMessage } = require('@whiskeysockets/baileys');
-            const buffer = await downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-
-            let caption = `*ViewOnce Saved*\nFrom: ${senderRaw}\nChat: ${chatId}\nType: ${type}\nSession: ${sessionName}`;
-
-            if(type.includes('image')){
-              await sock.sendMessage(thisSessionJid, { image: buffer, caption });
-            } else if(type.includes('video')){
-              await sock.sendMessage(thisSessionJid, { video: buffer, caption });
-            } else if(type.includes('audio')){
-              await sock.sendMessage(thisSessionJid, { audio: buffer, ptt: inner[type].ptt || false });
-            } else {
-              // For any other type
-              await sock.sendMessage(thisSessionJid, { text: caption });
-              await sock.sendMessage(thisSessionJid, { forward: m });
-            }
-          }
-        }
       } catch(e){ console.log('[VVSAVE ERR]', e.message); }
-      // === END VVSAVE ===
+      // ===== END VVSAVE =====
+
+      const senderRaw = m.key.participant || m.key.remoteJid;
       const text = m.message.conversation || m.message.extendedTextMessage?.text || m.message.imageMessage?.caption || m.message.videoMessage?.caption || '';
       if(!text) continue;
       const parsed = parseCommandForSession(text.trim(), sessionName);
@@ -240,7 +199,7 @@ async function startSession(sessionName, phoneNumberForPairing=null){
         if(!targetNum){ await sock.sendMessage(chatId, {text: `Use: ${parsed.prefix}addsession 23480xxxxxxx`}); continue; }
         const nextName = getNextSessionName();
         if(!nextName){ await sock.sendMessage(chatId, {text: `❌ Max ${MAX_SESSIONS} reached`}); continue; }
-        await sock.sendMessage(chatId, {text: `⏳ Creating ${nextName} for ${targetNum}... generating code...`});
+        await sock.sendMessage(chatId, {text: `⏳ Creating ${nextName} for ${targetNum}...`});
         (async ()=>{
           const newSessionDir = path.join(SESSIONS_DIR, nextName);
           if(!fs.existsSync(newSessionDir)) fs.mkdirSync(newSessionDir,{recursive:true});
@@ -255,32 +214,26 @@ async function startSession(sessionName, phoneNumberForPairing=null){
             browser: ['Chrome','Windows','10']
           });
           newSock.ev.on('creds.update', saveCreds);
-
-          // YOUR NEW FIXED CODE HERE
           setTimeout(async ()=>{
             try{
               const cleanNum = targetNum.replace(/[^0-9]/g,'');
               console.log(`[${nextName}] Requesting code for ${cleanNum}`);
-              try {
-                const credsFile = path.join(newSessionDir, 'creds.json');
-                if(fs.existsSync(credsFile)) fs.unlinkSync(credsFile);
-              } catch {}
+              try { const credsFile = path.join(newSessionDir, 'creds.json'); if(fs.existsSync(credsFile)) fs.unlinkSync(credsFile); } catch {}
               const code = await newSock.requestPairingCode(cleanNum);
               const formattedCode = code.includes('-')? code : code.match(/.{1,4}/g)?.join('-') || code;
-              console.log(`[${nextName}] CODE: ${code} FORMATTED: ${formattedCode}`);
-              await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${cleanNum}\nRaw Code: *${code}*\nEnter as: *${formattedCode}*\n\n1. Open WhatsApp on ${cleanNum}\n2. Settings > Linked Devices\n3. Link a Device\n4. Link with phone number instead\n5. Enter code: ${code}\n\nYou have 60 sec`});
+              console.log(`[${nextName}] CODE: ${code}`);
+              await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${cleanNum}\nCode: *${code}*\nFormatted: *${formattedCode}*\n\nYou have 60 sec - bot waits 35 sec`});
               setTimeout(()=> {
-                console.log(`[${nextName}] Restarting after 35s delay...`);
+                console.log(`[${nextName}] Restarting after 35s`);
                 try { newSock.end(); } catch {}
                 startSession(nextName);
               }, 35000);
             }catch(e){
               console.log(`[${nextName}] Pairing error:`, e);
-              await sock.sendMessage(chatId, {text: `❌ Pairing failed: ${e.message}\n\nMake sure:\n- Number is ${targetNum} with WhatsApp\n- Number not already linked to 4 devices`});
+              await sock.sendMessage(chatId, {text: `❌ Pairing failed: ${e.message}`});
               try { newSock.end(); } catch {}
             }
           }, 5000);
-
           newSock.ev.on('connection.update', async (u)=>{
             if(u.connection==='open'){
               runtimes[nextName] = { sock: newSock, connected: true };
