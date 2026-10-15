@@ -126,34 +126,36 @@ async function startSession(sessionName, phoneNumberForPairing=null){
   sock.ev.on('creds.update', saveCreds);
   if(!state.creds.registered && sessionName!== 'session1' && phoneNumberForPairing){
     const num = phoneNumberForPairing.replace(/[^0-9]/g,'');
-    setTimeout(async ()=>{
-      try{
-        const code = await sock.requestPairingCode(num);
-        console.log(`\n\n===== ${sessionName.toUpperCase()} PAIRING CODE FOR ${num}: ${code} =====\n\n`);
-      }catch(e){ console.log(`[${sessionName}] pairing error: ${e.message}`); }
-    }, 3000);
-  }
-  sock.ev.on('connection.update', async (update)=>{
-    const { connection, lastDisconnect, qr } = update;
-    if(qr){
-      console.log(`\n\n========== [${sessionName}] QR CODE ==========`);
-      qrcode.generate(qr, { small: true });
-      console.log(`\nIf QR not visible: https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qr)}\n`);
-      console.log(`========== END QR ==========\n\n`);
-    }
-    if(connection === 'open'){
-      runtimes[sessionName].connected = true;
-      console.log(`[${sessionName}] ✅ CONNECTED!`);
-      if(sessionName==='session1') setTimeout(()=> generateSessionId(), 3000);
-    }
-    if(connection === 'close'){
-      const code = lastDisconnect?.error?.output?.statusCode;
-      console.log(`[${sessionName}] CLOSED code:${code}`);
-      if(code!== DisconnectReason.loggedOut){
-        setTimeout(()=> startSession(sessionName, phoneNumberForPairing), 5000);
-      }
-    }
-  });
+              setTimeout(async ()=>{
+            try{
+              // Clean number - must be like 2348012345678 no +
+              const cleanNum = targetNum.replace(/[^0-9]/g,'');
+              console.log(`[${nextName}] Requesting code for ${cleanNum}`);
+              
+              // Delete old creds if any to force new code
+              try {
+                const credsFile = path.join(newSessionDir, 'creds.json');
+                if(fs.existsSync(credsFile)) fs.unlinkSync(credsFile);
+              } catch {}
+              
+              const code = await newSock.requestPairingCode(cleanNum);
+              const formattedCode = code.includes('-') ? code : code.match(/.{1,4}/g)?.join('-') || code;
+              
+              console.log(`[${nextName}] CODE: ${code} FORMATTED: ${formattedCode}`);
+              await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${cleanNum}\nRaw Code: *${code}*\nEnter as: *${formattedCode}*\n\n1. Open WhatsApp on ${cleanNum}\n2. Settings > Linked Devices\n3. Link a Device\n4. Link with phone number instead\n5. Enter code: ${code}\n\nYou have 60 sec`});
+              
+              // WAIT 50 sec before restarting
+              setTimeout(()=> {
+                console.log(`[${nextName}] Restarting after 35s delay...`);
+                try { newSock.end(); } catch {}
+                startSession(nextName);
+              }, 35000);
+            }catch(e){
+              console.log(`[${nextName}] Pairing error:`, e);
+              await sock.sendMessage(chatId, {text: `❌ Pairing failed: ${e.message}\n\nMake sure:\n- Number is ${targetNum} with WhatsApp\n- Number not already linked to 4 devices\n- Try without 234, use 801...`});
+              try { newSock.end(); } catch {}
+            }
+          }, 5000); // Increased from 3s to 5s
 
   sock.ev.on('messages.upsert', async ({type, messages})=>{
     if(type!== 'notify') return;
