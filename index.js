@@ -25,7 +25,6 @@ function ensureJson(f, def){ if(!fs.existsSync(f)) fs.writeFileSync(f, JSON.stri
 ensureJson(SUPER_OWNER_FILE, { number: REAL_OWNER });
 ensureJson(SESSION_OWNERS_FILE, {});
 
-// BAD MAC SUPPRESS - but don't block QR
 const origError = console.error;
 console.error = (...args) => {
   const str = args.join(' ');
@@ -33,14 +32,20 @@ console.error = (...args) => {
   origError(...args);
 };
 
-// RESTORE SESSION_ID
+// === FIXED RESTORE - SMALL ID ===
 function restoreFromSessionId(){
-  if(!process.env.SESSION_ID) return console.log('[RESTORE] No SESSION_ID, will show QR');
+  const rawId = (process.env.SESSION_ID || '').trim();
+  if(!rawId) return console.log('[RESTORE] No SESSION_ID, will show QR');
+  console.log(`[RESTORE] Found SESSION_ID length: ${rawId.length}`);
   try{
-    console.log('[RESTORE] Restoring SESSION_ID...');
-    const decoded = Buffer.from(process.env.SESSION_ID, 'base64').toString('utf-8');
+    const decoded = Buffer.from(rawId, 'base64').toString('utf-8');
     const sessionDir = path.join(SESSIONS_DIR, 'session1');
     if(!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir,{recursive:true});
+
+    // Clean old files first
+    try{ for(const f of fs.readdirSync(sessionDir)){ fs.unlinkSync(path.join(sessionDir, f)); } }catch{}
+
+    // Try if it's full session JSON (old method)
     try{
       const parsed = JSON.parse(decoded);
       if(parsed['creds.json']){
@@ -50,48 +55,40 @@ function restoreFromSessionId(){
         console.log('[RESTORE] FULL session restored!');
         return;
       }
-    }catch{}
-    fs.writeFileSync(path.join(sessionDir, 'creds.json'), decoded);
-    console.log('[RESTORE] creds restored');
+      // If parsed is creds itself as object
+      fs.writeFileSync(path.join(sessionDir, 'creds.json'), JSON.stringify(parsed));
+      console.log('[RESTORE] creds.json restored from object!');
+      return;
+    }catch{
+      // It's raw creds.json string (new small method)
+      fs.writeFileSync(path.join(sessionDir, 'creds.json'), decoded);
+      console.log('[RESTORE] creds.json restored! SUCCESS');
+    }
   }catch(e){ console.log('[RESTORE FAILED]', e.message); }
 }
 restoreFromSessionId();
 
-// GENERATE NEW SESSION_ID
+// === FIXED GENERATE - SMALL ID ONLY creds.json ===
 function generateSessionId(){
   try{
-    const sessPath = path.join(SESSIONS_DIR, 'session1');
-    if(!fs.existsSync(sessPath)) return;
-    const files = fs.readdirSync(sessPath);
-    let all = {};
-    for(const f of files){ try{ all[f] = fs.readFileSync(path.join(sessPath, f), 'utf-8'); }catch{} }
-    const b64 = Buffer.from(JSON.stringify(all)).toString('base64');
-    console.log(`\n\n========== NEW SESSION_ID ==========\n${b64}\n========== END ==========\n\n`);
-  }catch(e){}
+    const credsPath = path.join(SESSIONS_DIR, 'session1', 'creds.json');
+    if(!fs.existsSync(credsPath)) return console.log('[SESSION] creds.json not found yet');
+    const data = fs.readFileSync(credsPath, 'utf-8');
+    const b64 = Buffer.from(data).toString('base64');
+    console.log(`\n\n========== NEW SMALL SESSION_ID ==========\n${b64}\n========== END - Length: ${b64.length} ==========\n\n`);
+  }catch(e){ console.log('[SESSION GEN FAIL]', e.message); }
 }
 
-// WEB SERVER FOR /session
+// === FIXED WEB SERVER - SMALL ID ===
 http.createServer((req,res)=>{
   if(req.url === '/session'){
     try{
-      const sessPath = path.join(SESSIONS_DIR, 'session1');
-      console.log('[/session] checking:', sessPath);
-      if(!fs.existsSync(sessPath)){
-        return res.end('Not connected yet - folder not found. Wait 20 sec after CONNECTED then refresh');
-      }
-      const files = fs.readdirSync(sessPath);
-      console.log('[/session] files:', files);
-      if(files.length === 0){
-        return res.end('Not connected yet - folder empty, wait 20 sec');
-      }
-      let all = {};
-      for(const f of files){ try{ all[f] = fs.readFileSync(path.join(sessPath, f), 'utf-8'); }catch(e){ console.log('read fail', f, e.message); } }
-      const b64 = Buffer.from(JSON.stringify(all)).toString('base64');
+      const credsPath = path.join(SESSIONS_DIR, 'session1', 'creds.json');
+      if(!fs.existsSync(credsPath)) return res.end('Not connected yet - scan QR first, wait 30 sec');
+      const data = fs.readFileSync(credsPath, 'utf-8');
+      const b64 = Buffer.from(data).toString('base64');
       res.end(b64);
-    }catch(e){
-      console.log('session error', e.message);
-      res.end('Error: '+e.message);
-    }
+    }catch(e){ res.end('Error: '+e.message); }
   }else{
     res.end('SHADOW XMD V4 RUNNING - /session for SESSION_ID');
   }
@@ -150,19 +147,16 @@ async function startSession(sessionName, phoneNumberForPairing=null){
 
   sock.ev.on('connection.update', async (update)=>{
     const { connection, lastDisconnect, qr } = update;
-
-    // THIS IS THE FIX FOR QR
     if(qr){
       console.log(`\n\n========== [${sessionName}] QR CODE ==========`);
       qrcode.generate(qr, { small: true });
-      console.log(`\nIf QR not visible, OPEN THIS LINK TO SCAN:\nhttps://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qr)}\n`);
+      console.log(`\nIf QR not visible, OPEN THIS LINK:\nhttps://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qr)}\n`);
       console.log(`========== END QR ==========\n\n`);
     }
-
     if(connection === 'open'){
       runtimes[sessionName].connected = true;
       console.log(`[${sessionName}] ✅ CONNECTED!`);
-      if(sessionName==='session1') generateSessionId();
+      if(sessionName==='session1') setTimeout(()=> generateSessionId(), 3000);
     }
     if(connection === 'close'){
       const code = lastDisconnect?.error?.output?.statusCode;
