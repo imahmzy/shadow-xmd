@@ -2,21 +2,6 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
-http.createServer((req,res)=>{
-  if(req.url === '/session'){
-    try{
-      const p = path.join(__dirname, 'sessions', 'session1', 'creds.json');
-      if(!fs.existsSync(p)) return res.end('Not connected yet - creds.json not found');
-      const data = fs.readFileSync(p,'utf-8');
-      const b64 = Buffer.from(data).toString('base64');
-      res.end(b64);
-    }catch(e){ res.end('Error: '+e.message); }
-  }else{
-    res.end('SHADOW XMD V4 RUNNING - Go to /session to get SESSION_ID');
-  }
-}).listen(process.env.PORT || 3000, ()=> console.log('PORT FIXED'));
-// FORCE FRESH QR - DELETE AFTER SCANNING ONCE
-try{ require('child_process').execSync('rm -rf sessions/session1'); console.log('DELETED OLD SESSION1 FOR FRESH QR'); }catch{}
 
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
@@ -40,28 +25,68 @@ ensureJson(SUPER_OWNER_FILE, { number: REAL_OWNER, gid: REAL_OWNER+'@s.whatsapp.
 ensureJson(SESSION_OWNERS_FILE, {});
 fs.writeFileSync(SUPER_OWNER_FILE, JSON.stringify({ number: REAL_OWNER, gid: REAL_OWNER+'@s.whatsapp.net' }, null,2));
 
+// SUPPRESS BAD MAC SPAM
+const origError = console.error;
+console.error = (...args) => {
+  const str = args.join(' ');
+  if(str.includes('Bad MAC') || str.includes('Session error')) return;
+  origError(...args);
+};
+process.on('uncaughtException', (err)=>{
+  if(err.message && (err.message.includes('Bad MAC') || err.message.includes('Session error'))) return;
+  console.log('UNCAUGHT', err.message);
+});
+
 function restoreFromSessionId(){
   if(!process.env.SESSION_ID) { console.log('[RESTORE] No SESSION_ID env, will generate QR'); return; }
   try{
-    console.log('[RESTORE] SESSION_ID found...');
+    console.log('[RESTORE] SESSION_ID found, restoring...');
     const decoded = Buffer.from(process.env.SESSION_ID, 'base64').toString('utf-8');
     const sessionDir = path.join(SESSIONS_DIR, 'session1');
     if(!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir,{recursive:true});
+    try{
+      const parsed = JSON.parse(decoded);
+      if(parsed['creds.json']){
+        for(const [file, content] of Object.entries(parsed)){
+          fs.writeFileSync(path.join(sessionDir, file), content);
+        }
+        console.log('[RESTORE] FULL session restored (no Bad MAC)');
+        return;
+      }
+    }catch{}
     fs.writeFileSync(path.join(sessionDir, 'creds.json'), decoded);
-    console.log('[RESTORE] session1 restored from SESSION_ID');
+    console.log('[RESTORE] creds.json restored (old format)');
   }catch(e){ console.log('[RESTORE FAILED]', e.message); }
 }
 restoreFromSessionId();
 
 function generateSessionId(){
   try{
-    const p = path.join(SESSIONS_DIR, 'session1', 'creds.json');
-    if(!fs.existsSync(p)) return;
-    const data = fs.readFileSync(p,'utf-8');
-    const b64 = Buffer.from(data).toString('base64');
-    console.log(`\n\n========== YOUR SESSION1 SESSION_ID (COPY TO RENDER ENV) ==========\n${b64}\n========== END SESSION_ID ==========\n\n`);
+    const sessPath = path.join(SESSIONS_DIR, 'session1');
+    if(!fs.existsSync(sessPath)) return;
+    const files = fs.readdirSync(sessPath);
+    let all = {};
+    for(const f of files){ try{ all[f] = fs.readFileSync(path.join(sessPath, f), 'utf-8'); }catch{} }
+    const b64 = Buffer.from(JSON.stringify(all)).toString('base64');
+    console.log(`\n\n========== YOUR NEW FULL SESSION1 SESSION_ID (COPY TO RENDER ENV) ==========\n${b64}\n========== END SESSION_ID ==========\n\n`);
   }catch(e){ console.log('gen fail', e.message); }
 }
+
+http.createServer((req,res)=>{
+  if(req.url === '/session'){
+    try{
+      const sessPath = path.join(SESSIONS_DIR, 'session1');
+      if(!fs.existsSync(sessPath)) return res.end('Not connected yet');
+      const files = fs.readdirSync(sessPath);
+      let all = {};
+      for(const f of files){ try{ all[f] = fs.readFileSync(path.join(sessPath, f), 'utf-8'); }catch{} }
+      const b64 = Buffer.from(JSON.stringify(all)).toString('base64');
+      res.end(b64);
+    }catch(e){ res.end('Error: '+e.message); }
+  }else{
+    res.end('SHADOW XMD V4 RUNNING - Go to /session to get FULL SESSION_ID');
+  }
+}).listen(process.env.PORT || 3000, ()=> console.log('PORT FIXED'));
 
 function getSessionDataDir(s){ const dir = path.join(PER_SESSION_DATA_DIR, s); if(!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true}); return dir; }
 function getSessionFile(s, file, def){ const dir = getSessionDataDir(s); const fp = path.join(dir, file); if(!fs.existsSync(fp)) fs.writeFileSync(fp, JSON.stringify(def,null,2)); return fp; }
@@ -97,9 +122,9 @@ async function startSession(sessionName, phoneNumberForPairing=null){
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
   let version; try{ version = (await fetchLatestBaileysVersion()).version; }catch{ version = [2,3000,1015901307]; }
-  console.log(`[${sessionName}] REGISTERED: ${state.creds.registered} | pairing: ${phoneNumberForPairing||'none'} | fileExists: ${fs.existsSync(path.join(sessionDir,'creds.json'))}`);
+  console.log(`[${sessionName}] REGISTERED: ${state.creds.registered} | pairing: ${phoneNumberForPairing||'none'}`);
 
-  const sock = makeWASocket({ auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) }, logger, version, markOnlineOnConnect: true, syncFullHistory: false,browser: ['Chrome','Windows','10']
+  const sock = makeWASocket({ auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) }, logger, version, markOnlineOnConnect: true, syncFullHistory: false, browser: ['Chrome','Windows','10'] });
   runtimes[sessionName] = { sock, connected: false };
   sock.ev.on('creds.update', saveCreds);
 
@@ -108,22 +133,17 @@ async function startSession(sessionName, phoneNumberForPairing=null){
     setTimeout(async ()=>{
       try{
         const code = await sock.requestPairingCode(num);
-        console.log(`\n\n===== ${sessionName.toUpperCase()} 8-DIGIT CODE FOR ${num}: ${code} =====\n\n`);
-        if(runtimes['session1']?.connected){
-          try{ await runtimes['session1'].sock.sendMessage(REAL_OWNER+'@s.whatsapp.net', {text: `*${sessionName} PAIR CODE*\nNumber: ${num}\nCode: *${code}*`}); }catch{}
-        }
+        console.log(`\n\n===== ${sessionName.toUpperCase()} CODE FOR ${num}: ${code} =====\n\n`);
       }catch(e){ console.log(`[${sessionName}] pairing error: ${e.message}`); }
     }, 3000);
   }
 
   sock.ev.on('connection.update', async (update)=>{
-    console.log(`[${sessionName}] UPDATE:`, JSON.stringify(update).slice(0, 400));
     const { connection, lastDisconnect, qr } = update;
-    if(qr){
+    if(qr && sessionName==='session1'){
       console.log(`\n\n========== [${sessionName}] QR DETECTED ==========`);
       qrcode.generate(qr, { small: true });
-      console.log(`\nQR LINK: https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qr)}\n`);
-      console.log(`========== END QR ==========\n\n`);
+      console.log(`\nLINK: https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qr)}\n`);
     }
     if(connection === 'open'){
       runtimes[sessionName].connected = true;
@@ -134,7 +154,7 @@ async function startSession(sessionName, phoneNumberForPairing=null){
     }
     if(connection === 'close'){
       const code = lastDisconnect?.error?.output?.statusCode;
-      console.log(`[${sessionName}] CLOSED code:${code} ${lastDisconnect?.error?.message}`);
+      console.log(`[${sessionName}] CLOSED code:${code}`);
       if(code!== DisconnectReason.loggedOut){
         setTimeout(()=> startSession(sessionName, phoneNumberForPairing), 5000);
       }
@@ -154,7 +174,6 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       const parsed = parseCommandForSession(text.trim(), sessionName);
       if(!parsed) continue;
       const isRealOwner = senderNum === REAL_OWNER;
-
       if(['addsession','addsessions'].includes(parsed.command)){
         if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only`}); continue; }
         const targetNum = parsed.args[0]?.replace(/[^0-9]/g,'');
@@ -184,7 +203,6 @@ async function startSession(sessionName, phoneNumberForPairing=null){
         try{ if(runtimes[toDel]){ try{ await runtimes[toDel].sock.logout(); }catch{} } fs.rmSync(delPath,{recursive:true,force:true}); const perPath = path.join(PER_SESSION_DATA_DIR, toDel); if(fs.existsSync(perPath)) fs.rmSync(perPath,{recursive:true,force:true}); const o = getSessionOwners(); delete o[toDel]; fs.writeFileSync(SESSION_OWNERS_FILE, JSON.stringify(o,null,2)); await sock.sendMessage(chatId, {text: `✅ Deleted ${toDel}`}); }catch(e){ await sock.sendMessage(chatId, {text: `❌ ${e.message}`}); }
         continue;
       }
-
       const handler = loadedCommands.get(parsed.command);
       if(!handler) continue;
       const ctx = { sock, m, chatId, sender: senderRaw, senderNum, isGroup: chatId.endsWith('@g.us'), isSuperOwner: isRealOwner, isSessionOwner: true, isFromMe: m.key.fromMe, superOwner: REAL_OWNER, getPrefix: ()=>getPrefixForSession(sessionName), BOT_NAME, sessionName, getSessionJson, setSessionJson, getSessionDataDir, command: parsed.command, pushName: m.pushName||'Unknown' };
