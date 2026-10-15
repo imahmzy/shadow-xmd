@@ -166,8 +166,8 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       const parsed = parseCommandForSession(text.trim(), sessionName);
       if(!parsed) continue;
 
-            // OWNER CHECK - Support both phone and LID
-      const OWNER_LIDS = ['174384966807605', '174384966807605@lid']; // YOUR LID FROM LOG
+                  // OWNER CHECK - Support both phone and LID
+      const OWNER_LIDS = ['220568498516184', '220568498516184@lid', '2348166412988']; 
       const ALL_OWNERS = [REAL_OWNER, ...OWNER_LIDS];
       const rawCheck = String(senderRaw) + String(chatId) + String(m.key.remoteJid);
       const isRealOwner = ALL_OWNERS.some(id => rawCheck.includes(id));
