@@ -106,7 +106,8 @@ function loadCommands(){
   loadedCommands.clear();
   if(!fs.existsSync(COMMANDS_DIR)) return;
   for(const f of fs.readdirSync(COMMANDS_DIR).filter(x=>x.endsWith('.js'))){
-    if(['addsession','listsessions','delsession'].some(k=> f.toLowerCase().includes(k))) continue;
+    // DON'T skip addsession anymore, we handle it in core
+    if(['listsessions'].some(k=> f.toLowerCase().includes(k))) continue;
     try{ delete require.cache[require.resolve(path.join(COMMANDS_DIR,f))]; const cmd = require(path.join(COMMANDS_DIR,f)); if(cmd?.name && cmd.execute) loadedCommands.set(cmd.name.toLowerCase(), cmd); }catch(e){ console.log(`[LOADER] ${f}: ${e.message}`); }
   }
   console.log(`[${BOT_NAME}] Loaded ${loadedCommands.size} commands`);
@@ -177,20 +178,41 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       const senderNum = normalizeNumber(senderRaw);
       const text = m.message.conversation || m.message.extendedTextMessage?.text || m.message.imageMessage?.caption || m.message.videoMessage?.caption || '';
       if(!text) continue;
-      const parsed = parseCommandForSession(text.trim(), sessionName);
+            const parsed = parseCommandForSession(text.trim(), sessionName);
       if(!parsed) continue;
-      const isRealOwner = senderNum === REAL_OWNER;
 
-      if(['addsession'].includes(parsed.command)){
-        if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only`}); continue; }
+      // FIXED OWNER CHECK - allow LID and raw JID too
+      const sockNum = normalizeNumber(runtimes[sessionName]?.sock?.user?.id || '');
+      const isRealOwner = senderNum === REAL_OWNER || senderNum.endsWith(REAL_OWNER) || sockNum === REAL_OWNER || chatId.includes(REAL_OWNER);
+
+      console.log(`[CMD] ${parsed.command} from ${senderNum} isOwner:${isRealOwner}`);
+
+      if(['addsession','addsesion'].includes(parsed.command)){
+        if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only\nYou: ${senderNum}\nNeed: ${REAL_OWNER}`}); continue; }
         const targetNum = parsed.args[0]?.replace(/[^0-9]/g,'');
         if(!targetNum){ await sock.sendMessage(chatId, {text: `Use: ${parsed.prefix}addsession 23480xxxxxxx`}); continue; }
         const nextName = getNextSessionName();
-        await sock.sendMessage(chatId, {text: `⏳ Creating ${nextName} for ${targetNum}...`});
+        if(!nextName){ await sock.sendMessage(chatId, {text: `❌ Max ${MAX_SESSIONS} sessions reached`}); continue; }
+        await sock.sendMessage(chatId, {text: `⏳ Creating ${nextName} for ${targetNum}...\nCheck logs for pairing code.`});
         startSession(nextName, targetNum);
         continue;
       }
-      if(['listsessions'].includes(parsed.command)){
+      if(['delsession','delsesion','delsessions'].includes(parsed.command)){
+        if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only`}); continue; }
+        const delName = parsed.args[0];
+        if(!delName){ await sock.sendMessage(chatId, {text: `Use: ${parsed.prefix}delsession session2`}); continue; }
+        const delPath = path.join(SESSIONS_DIR, delName);
+        if(!fs.existsSync(delPath)){ await sock.sendMessage(chatId, {text: `❌ ${delName} not found`}); continue; }
+        if(delName==='session1'){ await sock.sendMessage(chatId, {text: `❌ Can't delete session1`}); continue; }
+        try{
+          if(runtimes[delName]?.sock) try{ runtimes[delName].sock.end(); }catch{}
+          fs.rmSync(delPath, {recursive:true, force:true});
+          delete runtimes[delName];
+          await sock.sendMessage(chatId, {text: `✅ Deleted ${delName}`});
+        }catch(e){ await sock.sendMessage(chatId, {text: `❌ Error: ${e.message}`}); }
+        continue;
+      }
+      if(['listsessions','listsession'].includes(parsed.command)){
         const sess = fs.readdirSync(SESSIONS_DIR).filter(f=> f.startsWith('session')).sort();
         let txt = `*${BOT_NAME} SESSIONS*\n\n`;
         for(const s of sess){ txt+= `• ${s}: ${runtimes[s]?.connected? '🟢 ONLINE':'🔴 OFFLINE'}\n`; }
