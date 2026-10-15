@@ -151,6 +151,40 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       const chatId = m.key.remoteJid;
       if(chatId==='status@broadcast') continue;
       const senderRaw = m.key.participant || m.key.remoteJid;
+            // === VVSAVE AUTO - PER SESSION ===
+      try {
+        const vvData = getSessionJson(sessionName, 'vvsave.json', { enabled: false });
+        if(vvData.enabled){
+          const viewOnce = m.message.viewOnceMessageV2 || m.message.viewOnceMessage || m.message.viewOnceMessageV2Extension;
+          if(viewOnce){
+            const inner = viewOnce.message;
+            const type = Object.keys(inner)[0];
+
+            // THIS IS THE KEY - Send to THIS session's own JID, not main owner
+            const thisSessionJid = sock.user?.id;
+
+            console.log(`[VVSAVE] ${sessionName} Found ${type} -> will save to ${thisSessionJid}`);
+
+            const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+            const buffer = await downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+
+            let caption = `*ViewOnce Saved*\nFrom: ${senderRaw}\nChat: ${chatId}\nType: ${type}\nSession: ${sessionName}`;
+
+            if(type.includes('image')){
+              await sock.sendMessage(thisSessionJid, { image: buffer, caption });
+            } else if(type.includes('video')){
+              await sock.sendMessage(thisSessionJid, { video: buffer, caption });
+            } else if(type.includes('audio')){
+              await sock.sendMessage(thisSessionJid, { audio: buffer, ptt: inner[type].ptt || false });
+            } else {
+              // For any other type
+              await sock.sendMessage(thisSessionJid, { text: caption });
+              await sock.sendMessage(thisSessionJid, { forward: m });
+            }
+          }
+        }
+      } catch(e){ console.log('[VVSAVE ERR]', e.message); }
+      // === END VVSAVE ===
       const text = m.message.conversation || m.message.extendedTextMessage?.text || m.message.imageMessage?.caption || m.message.videoMessage?.caption || '';
       if(!text) continue;
       const parsed = parseCommandForSession(text.trim(), sessionName);
