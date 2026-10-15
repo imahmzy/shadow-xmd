@@ -75,12 +75,23 @@ http.createServer((req,res)=>{
   if(req.url === '/session'){
     try{
       const sessPath = path.join(SESSIONS_DIR, 'session1');
-      if(!fs.existsSync(sessPath)) return res.end('Not connected yet - scan QR first');
+      console.log('[/session] checking:', sessPath);
+      if(!fs.existsSync(sessPath)){
+        return res.end('Not connected yet - folder not found. Wait 20 sec after CONNECTED then refresh');
+      }
       const files = fs.readdirSync(sessPath);
+      console.log('[/session] files:', files);
+      if(files.length === 0){
+        return res.end('Not connected yet - folder empty, wait 20 sec');
+      }
       let all = {};
-      for(const f of files){ try{ all[f] = fs.readFileSync(path.join(sessPath, f), 'utf-8'); }catch{} }
-      res.end(Buffer.from(JSON.stringify(all)).toString('base64'));
-    }catch(e){ res.end('Error: '+e.message); }
+      for(const f of files){ try{ all[f] = fs.readFileSync(path.join(sessPath, f), 'utf-8'); }catch(e){ console.log('read fail', f, e.message); } }
+      const b64 = Buffer.from(JSON.stringify(all)).toString('base64');
+      res.end(b64);
+    }catch(e){
+      console.log('session error', e.message);
+      res.end('Error: '+e.message);
+    }
   }else{
     res.end('SHADOW XMD V4 RUNNING - /session for SESSION_ID');
   }
