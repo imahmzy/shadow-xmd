@@ -166,9 +166,12 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       const parsed = parseCommandForSession(text.trim(), sessionName);
       if(!parsed) continue;
 
-      // OWNER CHECK - DIRECT NUMBER IN JID
+            // OWNER CHECK - Support both phone and LID
+      const OWNER_LIDS = ['174384966807605', '174384966807605@lid']; // YOUR LID FROM LOG
+      const ALL_OWNERS = [REAL_OWNER, ...OWNER_LIDS];
       const rawCheck = String(senderRaw) + String(chatId) + String(m.key.remoteJid);
-      const isRealOwner = rawCheck.includes(REAL_OWNER);
+      const isRealOwner = ALL_OWNERS.some(id => rawCheck.includes(id));
+      console.log(`[OWNER DEBUG] senderRaw=${senderRaw} isOwner=${isRealOwner}`);
       console.log(`[OWNER DEBUG] cmd=${parsed.command} senderRaw=${senderRaw} chat=${chatId} isOwner=${isRealOwner}`);
 
       if(['addsession','addsesion'].includes(parsed.command)){
