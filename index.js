@@ -144,12 +144,52 @@ async function startSession(sessionName, phoneNumberForPairing=null){
     }
   });
 
-  sock.ev.on('messages.upsert', async ({type, messages})=>{
+    sock.ev.on('messages.upsert', async ({type, messages})=>{
     if(type!== 'notify') return;
     for(const m of messages){
-      if(!m.message) continue;
-      const chatId = m.key.remoteJid;
-      if(chatId==='status@broadcast') continue;
+      try {
+        if(!m.message) continue;
+        const chatId = m.key.remoteJid;
+        if(chatId==='status@broadcast') continue;
+
+        // ===== VVSAVE CHECK ALL - WORKING METHOD =====
+        const vvData = getSessionJson(sessionName, 'vvsave.json', { enabled: false });
+        if(vvData.enabled){
+          const msg = m.message;
+          const isViewOnce = msg.viewOnceMessageV2 || msg.viewOnceMessage || msg.viewOnceMessageV2Extension;
+          if(isViewOnce){
+            const innerMsg = isViewOnce.message;
+            if(innerMsg){
+              const thisJid = sock.user.id; // send to this session owner
+              const senderRaw = m.key.participant || m.key.remoteJid;
+
+              console.log(`[VVSAVE] ${sessionName} viewonce detected, saving to ${thisJid}`);
+
+              // Forward as normal message to owner DM
+              await sock.sendMessage(thisJid, { forward: m, force: true });
+
+              // Also try download and re-send clean
+              try {
+                const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+                const buffer = await downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+                const mediaType = Object.keys(innerMsg)[0];
+                let caption = `*VVSAVE* ${sessionName}\nFrom: ${senderRaw}\nIn: ${chatId}`;
+
+                if(mediaType === 'imageMessage'){
+                  await sock.sendMessage(thisJid, { image: buffer, caption });
+                } else if(mediaType === 'videoMessage'){
+                  await sock.sendMessage(thisJid, { video: buffer, caption });
+                } else if(mediaType === 'audioMessage'){
+                  await sock.sendMessage(thisJid, { audio: buffer, ptt: true });
+                }
+              } catch(e){ console.log('[VVSAVE DL FAIL]', e.message); }
+            }
+          }
+        }
+        // ===== END VVSAVE CHECK =====
+
+        const senderRaw = m.key.participant || m.key.remoteJid;
+        const text = m.message.conversation ||...
       const senderRaw = m.key.participant || m.key.remoteJid;
             // === VVSAVE AUTO - PER SESSION ===
       try {
