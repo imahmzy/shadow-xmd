@@ -178,35 +178,79 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       const senderNum = normalizeNumber(senderRaw);
       const text = m.message.conversation || m.message.extendedTextMessage?.text || m.message.imageMessage?.caption || m.message.videoMessage?.caption || '';
       if(!text) continue;
-            const parsed = parseCommandForSession(text.trim(), sessionName);
+                  const parsed = parseCommandForSession(text.trim(), sessionName);
       if(!parsed) continue;
 
-      // FIXED OWNER CHECK - allow LID and raw JID too
-      const sockNum = normalizeNumber(runtimes[sessionName]?.sock?.user?.id || '');
-      const isRealOwner = senderNum === REAL_OWNER || senderNum.endsWith(REAL_OWNER) || sockNum === REAL_OWNER || chatId.includes(REAL_OWNER);
+      // STRICT OWNER CHECK - only you
+      const cleanSender = normalizeNumber(senderRaw);
+      const isRealOwner = cleanSender === REAL_OWNER;
 
-      console.log(`[CMD] ${parsed.command} from ${senderNum} isOwner:${isRealOwner}`);
+      console.log(`[CMD] ${parsed.command} from ${cleanSender} owner:${isRealOwner}`);
 
       if(['addsession','addsesion'].includes(parsed.command)){
-        if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only\nYou: ${senderNum}\nNeed: ${REAL_OWNER}`}); continue; }
+        if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only`}); continue; }
         const targetNum = parsed.args[0]?.replace(/[^0-9]/g,'');
         if(!targetNum){ await sock.sendMessage(chatId, {text: `Use: ${parsed.prefix}addsession 23480xxxxxxx`}); continue; }
         const nextName = getNextSessionName();
         if(!nextName){ await sock.sendMessage(chatId, {text: `❌ Max ${MAX_SESSIONS} sessions reached`}); continue; }
-        await sock.sendMessage(chatId, {text: `⏳ Creating ${nextName} for ${targetNum}...\nCheck logs for pairing code.`});
-        startSession(nextName, targetNum);
+        await sock.sendMessage(chatId, {text: `⏳ Creating ${nextName} for ${targetNum}...\nGenerating pairing code...`});
+
+        // Start session and wait for code
+        (async ()=>{
+          const newSessionDir = path.join(SESSIONS_DIR, nextName);
+          if(!fs.existsSync(newSessionDir)) fs.mkdirSync(newSessionDir,{recursive:true});
+          getSessionJson(nextName, 'mode.json', { mode: 'public' });
+          getSessionJson(nextName, 'prefix.json', { prefix: '.' });
+          const { state, saveCreds } = await useMultiFileAuthState(newSessionDir);
+          let version; try{ version = (await fetchLatestBaileysVersion()).version; }catch{ version = [2,3000,1015901307]; }
+          const newSock = makeWASocket({
+            auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
+            logger, version,
+            printQRInTerminal: false,
+            browser: ['Chrome','Windows','10']
+          });
+          newSock.ev.on('creds.update', saveCreds);
+
+          if(!newSock.authState.creds.registered){
+            setTimeout(async ()=>{
+              try{
+                const code = await newSock.requestPairingCode(targetNum);
+                console.log(`[${nextName}] CODE: ${code} for ${targetNum}`);
+                await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${targetNum}\nCode: *${code}*\n\nGo to WhatsApp > Linked Devices > Link with phone number > enter code\n\nCode expires in 60 sec`});
+                // Start full session after
+                setTimeout(()=> startSession(nextName), 5000);
+              }catch(e){
+                console.log(`PAIRING FAIL: ${e.message}`);
+                await sock.sendMessage(chatId, {text: `❌ Pairing failed: ${e.message}\nMake sure number is correct and on WhatsApp`});
+              }
+            }, 3000);
+          }
+          newSock.ev.on('connection.update', async (u)=>{
+            const { connection, lastDisconnect, qr } = u;
+            if(connection === 'open'){
+              runtimes[nextName] = { sock: newSock, connected: true };
+              await sock.sendMessage(chatId, {text: `✅ ${nextName} connected!`});
+            }
+            if(connection === 'close'){
+              const c = lastDisconnect?.error?.output?.statusCode;
+              if(c!== DisconnectReason.loggedOut) setTimeout(()=> startSession(nextName), 5000);
+            }
+          });
+        })();
         continue;
       }
-      if(['delsession','delsesion','delsessions'].includes(parsed.command)){
+      if(['delsession','delsesion'].includes(parsed.command)){
         if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only`}); continue; }
-        const delName = parsed.args[0];
+        const delName = (parsed.args[0]||'').toLowerCase();
         if(!delName){ await sock.sendMessage(chatId, {text: `Use: ${parsed.prefix}delsession session2`}); continue; }
-        const delPath = path.join(SESSIONS_DIR, delName);
-        if(!fs.existsSync(delPath)){ await sock.sendMessage(chatId, {text: `❌ ${delName} not found`}); continue; }
         if(delName==='session1'){ await sock.sendMessage(chatId, {text: `❌ Can't delete session1`}); continue; }
+        const delPath = path.join(SESSIONS_DIR, delName);
+        const perPath = path.join(PER_SESSION_DATA_DIR, delName);
+        if(!fs.existsSync(delPath)){ await sock.sendMessage(chatId, {text: `❌ ${delName} not found`}); continue; }
         try{
           if(runtimes[delName]?.sock) try{ runtimes[delName].sock.end(); }catch{}
           fs.rmSync(delPath, {recursive:true, force:true});
+          if(fs.existsSync(perPath)) fs.rmSync(perPath, {recursive:true, force:true});
           delete runtimes[delName];
           await sock.sendMessage(chatId, {text: `✅ Deleted ${delName}`});
         }catch(e){ await sock.sendMessage(chatId, {text: `❌ Error: ${e.message}`}); }
