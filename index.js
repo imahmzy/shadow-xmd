@@ -8,6 +8,7 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLat
 
 const BOT_NAME = 'SHADOW XMD V4';
 const REAL_OWNER = '2348166412988';
+const OWNER_LID = '220568498516184';
 const MAX_SESSIONS = 10;
 const RENDER_URL = process.env.RENDER_EXTERNAL_URL || 'https://shadow-xmd-i4tf.onrender.com';
 
@@ -166,13 +167,11 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       const parsed = parseCommandForSession(text.trim(), sessionName);
       if(!parsed) continue;
 
-                  // OWNER CHECK - Support both phone and LID
-      const OWNER_LIDS = ['220568498516184', '220568498516184@lid', '2348166412988']; 
-      const ALL_OWNERS = [REAL_OWNER, ...OWNER_LIDS];
+      // OWNER CHECK - FIXED LID
+      const OWNER_LIDS = [OWNER_LID, `${OWNER_LID}@lid`, REAL_OWNER];
       const rawCheck = String(senderRaw) + String(chatId) + String(m.key.remoteJid);
-      const isRealOwner = ALL_OWNERS.some(id => rawCheck.includes(id));
-      console.log(`[OWNER DEBUG] senderRaw=${senderRaw} isOwner=${isRealOwner}`);
-      console.log(`[OWNER DEBUG] cmd=${parsed.command} senderRaw=${senderRaw} chat=${chatId} isOwner=${isRealOwner}`);
+      const isRealOwner = OWNER_LIDS.some(id => rawCheck.includes(id));
+      console.log(`[OWNER DEBUG] cmd=${parsed.command} senderRaw=${senderRaw} isOwner=${isRealOwner}`);
 
       if(['addsession','addsesion'].includes(parsed.command)){
         if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only`}); continue; }
@@ -199,8 +198,12 @@ async function startSession(sessionName, phoneNumberForPairing=null){
             try{
               const code = await newSock.requestPairingCode(targetNum);
               console.log(`[${nextName}] CODE: ${code}`);
-              await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${targetNum}\nCode: *${code}*\n\nWhatsApp > Linked Devices > Link with phone number`});
-              setTimeout(()=> startSession(nextName), 5000);
+              await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${targetNum}\nCode: *${code}*\n\nWhatsApp > Linked Devices > Link with phone number\n\nYou have 60 sec - bot waits 35 sec`});
+              // FIX: Wait 35 sec before restarting
+              setTimeout(()=> {
+                console.log(`[${nextName}] Restarting after 35s delay...`);
+                startSession(nextName);
+              }, 35000);
             }catch(e){
               await sock.sendMessage(chatId, {text: `❌ Pairing failed: ${e.message}`});
             }
@@ -209,6 +212,9 @@ async function startSession(sessionName, phoneNumberForPairing=null){
             if(u.connection==='open'){
               runtimes[nextName] = { sock: newSock, connected: true };
               await sock.sendMessage(chatId, {text: `✅ ${nextName} connected!`});
+            }
+            if(u.connection==='close'){
+              console.log(`[${nextName}] temp sock closed, waiting 35s before restart`);
             }
           });
         })();
@@ -248,7 +254,7 @@ async function startSession(sessionName, phoneNumberForPairing=null){
 setInterval(()=>{ https.get(RENDER_URL, (res)=> console.log(`[PING] ${res.statusCode}`)).on('error', ()=>{}); }, 10*60*1000);
 
 async function startAll(){
-  console.log(`=== ${BOT_NAME} | OWNER ${REAL_OWNER} ===`);
+  console.log(`=== ${BOT_NAME} | OWNER ${REAL_OWNER} LID ${OWNER_LID} ===`);
   const existing = fs.existsSync(SESSIONS_DIR)? fs.readdirSync(SESSIONS_DIR).filter(f=> f.startsWith('session')).sort() : [];
   if(existing.length===0) startSession('session1');
   else for(const s of existing){ await startSession(s); await new Promise(r=> setTimeout(r,1000)); }
