@@ -36,7 +36,6 @@ console.error = (...args) => {
 function restoreFromSessionId(){
   const rawId = (process.env.SESSION_ID || '').trim();
   if(!rawId) return console.log('[RESTORE] No SESSION_ID, will show QR');
-  console.log(`[RESTORE] Found SESSION_ID length: ${rawId.length}`);
   try{
     const decoded = Buffer.from(rawId, 'base64').toString('utf-8');
     const sessionDir = path.join(SESSIONS_DIR, 'session1');
@@ -76,15 +75,15 @@ http.createServer((req,res)=>{
   if(req.url === '/session'){
     try{
       const credsPath = path.join(SESSIONS_DIR, 'session1', 'creds.json');
-      if(!fs.existsSync(credsPath)) return res.end('Not connected yet - scan QR first, wait 30 sec');
+      if(!fs.existsSync(credsPath)) return res.end('Not connected yet');
       const data = fs.readFileSync(credsPath, 'utf-8');
       const b64 = Buffer.from(data).toString('base64');
       res.end(b64);
     }catch(e){ res.end('Error: '+e.message); }
   }else{
-    res.end('SHADOW XMD V4 RUNNING - /session for SESSION_ID');
+    res.end('SHADOW XMD V4 RUNNING');
   }
-}).listen(process.env.PORT || 3000, ()=> console.log('PORT: '+(process.env.PORT||3000)));
+}).listen(process.env.PORT || 3000);
 
 function getSessionDataDir(s){ const dir = path.join(PER_SESSION_DATA_DIR, s); if(!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true}); return dir; }
 function getSessionJson(s, file, def){ try{ const dir = path.join(PER_SESSION_DATA_DIR, s||'session1'); if(!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true}); const fp = path.join(dir, file); if(!fs.existsSync(fp)) fs.writeFileSync(fp, JSON.stringify(def,null,2)); return JSON.parse(fs.readFileSync(fp,'utf8')); }catch{ return def; } }
@@ -124,38 +123,26 @@ async function startSession(sessionName, phoneNumberForPairing=null){
   });
   runtimes[sessionName] = { sock, connected: false };
   sock.ev.on('creds.update', saveCreds);
-  if(!state.creds.registered && sessionName!== 'session1' && phoneNumberForPairing){
-    const num = phoneNumberForPairing.replace(/[^0-9]/g,'');
-              setTimeout(async ()=>{
-            try{
-              // Clean number - must be like 2348012345678 no +
-              const cleanNum = targetNum.replace(/[^0-9]/g,'');
-              console.log(`[${nextName}] Requesting code for ${cleanNum}`);
-              
-              // Delete old creds if any to force new code
-              try {
-                const credsFile = path.join(newSessionDir, 'creds.json');
-                if(fs.existsSync(credsFile)) fs.unlinkSync(credsFile);
-              } catch {}
-              
-              const code = await newSock.requestPairingCode(cleanNum);
-              const formattedCode = code.includes('-') ? code : code.match(/.{1,4}/g)?.join('-') || code;
-              
-              console.log(`[${nextName}] CODE: ${code} FORMATTED: ${formattedCode}`);
-              await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${cleanNum}\nRaw Code: *${code}*\nEnter as: *${formattedCode}*\n\n1. Open WhatsApp on ${cleanNum}\n2. Settings > Linked Devices\n3. Link a Device\n4. Link with phone number instead\n5. Enter code: ${code}\n\nYou have 60 sec`});
-              
-              // WAIT 50 sec before restarting
-              setTimeout(()=> {
-                console.log(`[${nextName}] Restarting after 35s delay...`);
-                try { newSock.end(); } catch {}
-                startSession(nextName);
-              }, 35000);
-            }catch(e){
-              console.log(`[${nextName}] Pairing error:`, e);
-              await sock.sendMessage(chatId, {text: `❌ Pairing failed: ${e.message}\n\nMake sure:\n- Number is ${targetNum} with WhatsApp\n- Number not already linked to 4 devices\n- Try without 234, use 801...`});
-              try { newSock.end(); } catch {}
-            }
-          }, 5000); // Increased from 3s to 5s
+  sock.ev.on('connection.update', async (update)=>{
+    const { connection, lastDisconnect, qr } = update;
+    if(qr){
+      console.log(`\n\n========== [${sessionName}] QR CODE ==========`);
+      qrcode.generate(qr, { small: true });
+      console.log(`========== END QR ==========\n\n`);
+    }
+    if(connection === 'open'){
+      runtimes[sessionName].connected = true;
+      console.log(`[${sessionName}] ✅ CONNECTED!`);
+      if(sessionName==='session1') setTimeout(()=> generateSessionId(), 3000);
+    }
+    if(connection === 'close'){
+      const code = lastDisconnect?.error?.output?.statusCode;
+      console.log(`[${sessionName}] CLOSED code:${code}`);
+      if(code!== DisconnectReason.loggedOut){
+        setTimeout(()=> startSession(sessionName, phoneNumberForPairing), 5000);
+      }
+    }
+  });
 
   sock.ev.on('messages.upsert', async ({type, messages})=>{
     if(type!== 'notify') return;
@@ -169,11 +156,9 @@ async function startSession(sessionName, phoneNumberForPairing=null){
       const parsed = parseCommandForSession(text.trim(), sessionName);
       if(!parsed) continue;
 
-      // OWNER CHECK - FIXED LID
       const OWNER_LIDS = [OWNER_LID, `${OWNER_LID}@lid`, REAL_OWNER];
       const rawCheck = String(senderRaw) + String(chatId) + String(m.key.remoteJid);
       const isRealOwner = OWNER_LIDS.some(id => rawCheck.includes(id));
-      console.log(`[OWNER DEBUG] cmd=${parsed.command} senderRaw=${senderRaw} isOwner=${isRealOwner}`);
 
       if(['addsession','addsesion'].includes(parsed.command)){
         if(!isRealOwner){ await sock.sendMessage(chatId, {text: `❌ Owner only`}); continue; }
@@ -196,27 +181,36 @@ async function startSession(sessionName, phoneNumberForPairing=null){
             browser: ['Chrome','Windows','10']
           });
           newSock.ev.on('creds.update', saveCreds);
+
+          // YOUR NEW FIXED CODE HERE
           setTimeout(async ()=>{
             try{
-              const code = await newSock.requestPairingCode(targetNum);
-              console.log(`[${nextName}] CODE: ${code}`);
-              await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${targetNum}\nCode: *${code}*\n\nWhatsApp > Linked Devices > Link with phone number\n\nYou have 60 sec - bot waits 35 sec`});
-              // FIX: Wait 35 sec before restarting
+              const cleanNum = targetNum.replace(/[^0-9]/g,'');
+              console.log(`[${nextName}] Requesting code for ${cleanNum}`);
+              try {
+                const credsFile = path.join(newSessionDir, 'creds.json');
+                if(fs.existsSync(credsFile)) fs.unlinkSync(credsFile);
+              } catch {}
+              const code = await newSock.requestPairingCode(cleanNum);
+              const formattedCode = code.includes('-')? code : code.match(/.{1,4}/g)?.join('-') || code;
+              console.log(`[${nextName}] CODE: ${code} FORMATTED: ${formattedCode}`);
+              await sock.sendMessage(chatId, {text: `*${nextName} PAIRING CODE*\n\nNumber: ${cleanNum}\nRaw Code: *${code}*\nEnter as: *${formattedCode}*\n\n1. Open WhatsApp on ${cleanNum}\n2. Settings > Linked Devices\n3. Link a Device\n4. Link with phone number instead\n5. Enter code: ${code}\n\nYou have 60 sec`});
               setTimeout(()=> {
                 console.log(`[${nextName}] Restarting after 35s delay...`);
+                try { newSock.end(); } catch {}
                 startSession(nextName);
               }, 35000);
             }catch(e){
-              await sock.sendMessage(chatId, {text: `❌ Pairing failed: ${e.message}`});
+              console.log(`[${nextName}] Pairing error:`, e);
+              await sock.sendMessage(chatId, {text: `❌ Pairing failed: ${e.message}\n\nMake sure:\n- Number is ${targetNum} with WhatsApp\n- Number not already linked to 4 devices`});
+              try { newSock.end(); } catch {}
             }
-          }, 3000);
+          }, 5000);
+
           newSock.ev.on('connection.update', async (u)=>{
             if(u.connection==='open'){
               runtimes[nextName] = { sock: newSock, connected: true };
               await sock.sendMessage(chatId, {text: `✅ ${nextName} connected!`});
-            }
-            if(u.connection==='close'){
-              console.log(`[${nextName}] temp sock closed, waiting 35s before restart`);
             }
           });
         })();
